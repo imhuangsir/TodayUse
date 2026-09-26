@@ -2,7 +2,7 @@
 pub fn extract_domain(url: &str) -> Option<String> {
     let after_scheme = url.split("://").nth(1).unwrap_or(url);
     let host = after_scheme
-        .split(|c| c == '/' || c == '?' || c == '#')
+        .split(['/', '?', '#'])
         .next()
         .unwrap_or("");
     let host = host.rsplit('@').next().unwrap_or(host);

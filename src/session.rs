@@ -41,7 +41,7 @@ impl SessionBuilder {
 
     /// 处理活动事件；若发生切换，返回被结算的旧会话。
     pub fn on_activity(&mut self, ev: &ActivityEvent) -> Option<Session> {
-        let changed = self.current.as_ref().map_or(true, |c| !same_key(c, ev));
+        let changed = self.current.as_ref().is_none_or(|c| !same_key(c, ev));
         if changed {
             let closed = self.current.take().map(|mut s| {
                 s.close(ev.ts);

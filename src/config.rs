@@ -8,16 +8,11 @@ pub enum AiGranularity {
     Hour,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Desensitize {
     pub domains: bool,
     pub titles: bool,
-}
-impl Default for Desensitize {
-    fn default() -> Self {
-        Self { domains: false, titles: false }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -104,10 +99,12 @@ mod tests {
 
     #[test]
     fn roundtrip_preserves_values() {
-        let mut c = Config::default();
-        c.idle_threshold_sec = 120;
-        c.excluded_apps = vec!["private.exe".into()];
-        c.ai_enabled = true;
+        let c = Config {
+            idle_threshold_sec: 120,
+            excluded_apps: vec!["private.exe".into()],
+            ai_enabled: true,
+            ..Config::default()
+        };
         let p = std::env::temp_dir().join("at_roundtrip_cfg.toml");
         c.save(&p).unwrap();
         let loaded = Config::load(&p).unwrap();
