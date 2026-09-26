@@ -15,3 +15,6 @@ Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+
+# Superpowers SDD workspace (ledger/reports — not part of the codebase)
+.superpowers/
