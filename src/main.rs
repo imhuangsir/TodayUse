@@ -1,3 +1,56 @@
+use activity_tracker::{
+    aggregate, config::Config, logging, model::ActivityEvent, session::SessionBuilder,
+    storage::Storage,
+};
+use std::path::PathBuf;
+use time::UtcOffset;
+
+fn local_offset() -> UtcOffset {
+    UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC)
+}
+
 fn main() {
-    println!("activity-tracker core (M1)");
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(|s| s.as_str()) {
+        Some("replay") => {
+            let text = std::fs::read_to_string(&args[2]).expect("read events");
+            let mut sb = SessionBuilder::new();
+            let mut sessions = Vec::new();
+            let mut last_ts = 0i64;
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let ev: ActivityEvent = serde_json::from_str(line).expect("parse event");
+                last_ts = ev.ts;
+                if let Some(done) = sb.on_activity(&ev) {
+                    sessions.push(done);
+                }
+            }
+            if let Some(done) = sb.finish(last_ts) {
+                sessions.push(done);
+            }
+            let mut st = Storage::open(&args[3]).expect("open db");
+            st.insert_sessions(&sessions).expect("insert");
+            println!("replayed -> {} sessions", sessions.len());
+        }
+        Some("report") => {
+            let p: Vec<i64> = args[3].split('-').map(|x| x.parse().unwrap()).collect();
+            let (start, end) =
+                aggregate::local_day_bounds(p[0] as i32, p[1] as u8, p[2] as u8, local_offset());
+            let st = Storage::open(&args[2]).expect("open db");
+            let sessions = st.sessions_in_range(start, end).expect("query");
+            println!(
+                "有效 {}s / 空闲 {}s",
+                aggregate::total_active_sec(&sessions),
+                aggregate::total_idle_sec(&sessions)
+            );
+            for b in aggregate::app_durations(&sessions) {
+                println!("  {} - {}s", b.name, b.seconds);
+            }
+        }
+        _ => {
+            let cfg = Config::load(&PathBuf::from("config.toml")).unwrap_or_default();
+            logging::init(&PathBuf::from("activity-tracker.log"));
+            let _ = cfg;
+            println!("activity-tracker core (M1). 用法: replay <events.jsonl> <db> | report <db> <YYYY-MM-DD>");
+        }
+    }
 }
