@@ -1,7 +1,7 @@
 # Rust
 /target
 **/*.rs.bk
-Cargo.lock
+# (Cargo.lock is committed — this is an application, not a library)
 
 # App runtime data (never commit local activity data / secrets)
 *.db
