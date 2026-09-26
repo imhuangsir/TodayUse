@@ -1,5 +1,5 @@
 use crate::model::{PlaybackStatus, Session};
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS activity (
@@ -113,6 +113,45 @@ impl Storage {
     }
 }
 
+impl Storage {
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![key, value],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>, String> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key=?", params![key], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())
+    }
+    pub fn set_heartbeat(&self, ts: i64) -> Result<(), String> {
+        self.set_meta("heartbeat", &ts.to_string())
+    }
+    pub fn get_heartbeat(&self) -> Result<Option<i64>, String> {
+        Ok(self.get_meta("heartbeat")?.and_then(|v| v.parse::<i64>().ok()))
+    }
+    /// 把 end_ts 超过心跳 + grace 的会话夹回心跳时刻，返回修正行数。
+    pub fn recover_phantom(&self, grace_sec: i64) -> Result<usize, String> {
+        let h = match self.get_heartbeat()? {
+            Some(h) => h,
+            None => return Ok(0),
+        };
+        let n = self
+            .conn
+            .execute(
+                "UPDATE activity SET end_ts = ?1, duration_sec = MAX(0, ?1 - start_ts) WHERE end_ts > ?1 + ?2",
+                params![h, grace_sec],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +199,27 @@ mod tests {
         st.insert_sessions(&[sess(1000, 2000, "A")]).unwrap();
         assert_eq!(st.sessions_in_range(1500, 3000).unwrap().len(), 1);
         assert_eq!(st.sessions_in_range(3000, 4000).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn meta_roundtrip() {
+        let st = Storage::open_memory().unwrap();
+        assert_eq!(st.get_meta("x").unwrap(), None);
+        st.set_meta("x", "42").unwrap();
+        st.set_meta("x", "43").unwrap();
+        assert_eq!(st.get_meta("x").unwrap().as_deref(), Some("43"));
+    }
+
+    #[test]
+    fn recover_clamps_phantom_tail() {
+        let mut st = Storage::open_memory().unwrap();
+        st.insert_sessions(&[sess(1000, 5000, "Crashed"), sess(1000, 2000, "Fine")]).unwrap();
+        st.set_heartbeat(3000).unwrap();
+        let fixed = st.recover_phantom(60).unwrap();
+        assert_eq!(fixed, 1);
+        let all = st.sessions_in_range(0, 10000).unwrap();
+        let crashed = all.iter().find(|s| s.app_name == "Crashed").unwrap();
+        assert_eq!(crashed.end_ts, 3000);
+        assert_eq!(crashed.duration_sec, 2000);
     }
 }
