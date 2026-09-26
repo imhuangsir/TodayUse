@@ -1,0 +1,17 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock
+
+# App runtime data (never commit local activity data / secrets)
+*.db
+*.db-wal
+*.db-shm
+key.bin
+config.toml
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
