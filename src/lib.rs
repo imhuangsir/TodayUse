@@ -10,6 +10,8 @@ pub mod parse;
 pub mod media;
 #[cfg(windows)]
 pub mod platform;
+#[cfg(windows)]
+pub mod secret;
 pub mod session;
 pub mod storage;
 pub mod summarize;

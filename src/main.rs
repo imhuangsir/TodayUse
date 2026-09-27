@@ -56,7 +56,16 @@ fn main() {
             let cfg = Config::load(&PathBuf::from("config.toml")).unwrap_or_default();
             let p: Vec<i64> = args[3].split('-').map(|x| x.parse().unwrap()).collect();
             let mut st = Storage::open(&args[2]).expect("open db");
-            let key = std::env::var("AT_API_KEY").unwrap_or_default();
+            let key = std::env::var("AT_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    let base = std::env::var("LOCALAPPDATA").ok()?;
+                    activity_tracker::secret::load_key(
+                        &PathBuf::from(base).join("ActivityTracker").join("key.bin"),
+                    )
+                })
+                .unwrap_or_default();
             if cfg.ai_enabled && !key.is_empty() && !cfg.ai_base_url.is_empty() {
                 match activity_tracker::summarize::generate_for_day(
                     &mut st, &cfg, &key, p[0] as i32, p[1] as u8, p[2] as u8, local_offset(),
