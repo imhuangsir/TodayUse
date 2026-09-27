@@ -27,20 +27,21 @@ fn strip_leading_count(t: &str) -> &str {
     t
 }
 
-/// 从 Edge 窗口标题解析页面标题（去尾部 " - Microsoft Edge"）。
+/// 从 Edge 窗口标题解析页面标题。真实格式为 "页面 - [配置名 - ]Microsoft Edge"，
+/// 且 "Microsoft Edge" 中可能含特殊空格，故按 " - " 分段、去掉末尾含 "Edge" 的段。
 pub fn parse_edge_title(window_title: &str) -> Option<String> {
     let t = strip_leading_count(window_title.trim());
-    for suffix in [" - Microsoft Edge", " – Microsoft Edge"] {
-        if let Some(idx) = t.rfind(suffix) {
-            let page = t[..idx].trim();
-            return if page.is_empty() {
-                None
-            } else {
-                Some(page.to_string())
-            };
-        }
+    let parts: Vec<&str> = t.split(" - ").collect();
+    if parts.len() < 2 || !parts.last().unwrap().contains("Edge") {
+        return None;
     }
-    None
+    let page = parts[..parts.len() - 1].join(" - ");
+    let page = page.trim();
+    if page.is_empty() {
+        None
+    } else {
+        Some(page.to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +89,11 @@ mod tests {
         assert_eq!(parse_edge_title("(3) 收件箱 - Microsoft Edge").as_deref(), Some("收件箱"));
         assert_eq!(parse_edge_title("某视频 - YouTube - Microsoft Edge").as_deref(), Some("某视频 - YouTube"));
         assert_eq!(parse_edge_title("记事本"), None);
+        // 真实格式：含配置名段 + 特殊空格（此处用普通空格模拟分段结构）
+        assert_eq!(
+            parse_edge_title("标题_哔哩哔哩_bilibili - 个人 - Microsoft Edge").as_deref(),
+            Some("标题_哔哩哔哩_bilibili - 个人")
+        );
     }
 
     #[test]

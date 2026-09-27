@@ -52,6 +52,22 @@ fn main() {
             activity_tracker::collector::run_for(&cfg, &args[2], secs).expect("collect");
             println!("collected {}s -> {}", secs, args[2]);
         }
+        Some("dump") => {
+            let p: Vec<i64> = args[3].split('-').map(|x| x.parse().unwrap()).collect();
+            let (start, end) =
+                aggregate::local_day_bounds(p[0] as i32, p[1] as u8, p[2] as u8, local_offset());
+            let st = Storage::open(&args[2]).expect("open db");
+            let sessions = st.sessions_in_range(start, end).expect("query");
+            println!("共 {} 条会话:", sessions.len());
+            for s in &sessions {
+                println!(
+                    "[{}s idle={} priv={}] app={}\n    title  : {}\n    edge   : {:?}  page: {:?}\n    media  : {:?} status={:?} pos={:?}/{:?}",
+                    s.duration_sec, s.is_idle, s.is_private, s.app_name,
+                    s.window_title, s.edge_url, s.page_title,
+                    s.media_title, s.media_status, s.media_position_sec, s.media_duration_sec
+                );
+            }
+        }
         Some("summarize") => {
             let cfg = Config::load(&PathBuf::from("config.toml")).unwrap_or_default();
             let p: Vec<i64> = args[3].split('-').map(|x| x.parse().unwrap()).collect();
