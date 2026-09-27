@@ -46,47 +46,30 @@ fn winit_icon() -> Option<slint::winit_030::winit::window::Icon> {
 
 /// 打开/刷新仪表盘窗口，并设置任务栏图标（winit 层，修复默认图标）。
 fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &str) {
-    let created;
-    {
-        let mut wb = win.borrow_mut();
-        if let Some(d) = wb.as_ref() {
-            let _ = crate::ui::refresh_dashboard(d, db);
-            created = false;
-        } else {
-            match crate::ui::build_dashboard(db) {
-                Ok(d) => {
-                    *wb = Some(d);
-                    created = true;
-                }
-                Err(e) => {
-                    log::error!("打开仪表盘失败: {e}");
-                    return;
-                }
+    let mut wb = win.borrow_mut();
+    if let Some(d) = wb.as_ref() {
+        // 常规路径：窗口已在启动时预热建好，刷新数据后移回屏幕中央显示（秒显、可正常绘制）。
+        let _ = crate::ui::refresh_dashboard(d, db);
+        crate::ui::show_centered(d);
+    } else {
+        // 兜底：预热失败才走这里现建（首帧可能不显示，用 force_first_show 补救）。
+        match crate::ui::build_dashboard(db) {
+            Ok(d) => {
+                let _ = d.show();
+                crate::ui::force_first_show(&d);
+                *wb = Some(d);
+            }
+            Err(e) => {
+                log::error!("打开仪表盘失败: {e}");
+                return;
             }
         }
     }
-    if let Some(d) = win.borrow().as_ref() {
-        let _ = d.show();
+    if let Some(d) = wb.as_ref() {
         d.window().with_winit_window(|w| {
             use slint::winit_030::winit::platform::windows::WindowExtWindows;
             w.set_taskbar_icon(winit_icon());
         });
-        if created {
-            // 首次创建的无边框透明窗口，首帧常常没显示出来（表现为"第一次点查看没反应，
-            // 第二次点才出现"）。稍后再自动 show 两次（等价于自动补点击），确保首次即可见。
-            for delay in [140_u64, 420_u64] {
-                let weak = d.as_weak();
-                slint::Timer::single_shot(Duration::from_millis(delay), move || {
-                    if let Some(d) = weak.upgrade() {
-                        let _ = d.show();
-                        d.window().request_redraw();
-                        d.window().with_winit_window(|w| {
-                            w.focus_window();
-                        });
-                    }
-                });
-            }
-        }
     }
 }
 
@@ -108,9 +91,18 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
     }
     let _tray = builder.build().map_err(|e| e.to_string())?;
 
-    // 仪表盘窗口懒创建、之后复用刷新（软件渲染器，开销小，无需常驻预热）。
+    // 仪表盘窗口预热：在事件循环启动前 build+show（走能正常绘制的路径），随后移到屏幕外并隐藏。
+    // 这样首次点“查看”窗口已建好，直接复位居中+show 即可秒显、正常绘制（懒创建会首帧不显示/黑屏）。
     let win: Rc<std::cell::RefCell<Option<crate::ui::Dashboard>>> =
         Rc::new(std::cell::RefCell::new(None));
+    match crate::ui::build_dashboard(&db_path) {
+        Ok(d) => {
+            let _ = d.show();
+            crate::ui::prewarm_hide(&d);
+            *win.borrow_mut() = Some(d);
+        }
+        Err(e) => log::error!("预热仪表盘失败: {e}"),
+    }
 
     // 便当盒菜单：单实例，创建一次并预热；之后只重定位/显示/隐藏。
     let menu = crate::ui::TrayMenu::new().map_err(|e| e.to_string())?;

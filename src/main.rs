@@ -69,6 +69,9 @@ fn main() {
         Some("ui") => {
             activity_tracker::ui::show_dashboard(&args[2]).expect("ui");
         }
+        Some("diagwin") => {
+            activity_tracker::ui::diag_run(&args[2]);
+        }
         Some("dump") => {
             let p: Vec<i64> = args[3].split('-').map(|x| x.parse().unwrap()).collect();
             let (start, end) =
