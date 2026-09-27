@@ -105,17 +105,12 @@ pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
             let _ = u.hide();
         }
     });
+    // 无边框窗口拖动：交给 winit 的原生拖动（比手动 set_outer_position 稳，能真正跟手）。
     let w2 = ui.as_weak();
-    ui.on_drag_moved(move |dx, dy| {
+    ui.on_start_drag(move || {
         if let Some(u) = w2.upgrade() {
             u.window().with_winit_window(|win| {
-                if let Ok(pos) = win.outer_position() {
-                    let sf = win.scale_factor() as f32;
-                    win.set_outer_position(slint::winit_030::winit::dpi::PhysicalPosition::new(
-                        pos.x + (dx * sf).round() as i32,
-                        pos.y + (dy * sf).round() as i32,
-                    ));
-                }
+                let _ = win.drag_window();
             });
         }
     });

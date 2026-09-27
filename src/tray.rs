@@ -72,18 +72,20 @@ fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &s
             w.set_taskbar_icon(winit_icon());
         });
         if created {
-            // 首次创建：无边框透明窗口的首帧可能尚未绘制（整窗透明→看不见，
-            // 表现为“第一次点查看没反应”）。下一轮事件循环再 show + 强制重绘 + 置前。
-            let weak = d.as_weak();
-            slint::Timer::single_shot(Duration::from_millis(0), move || {
-                if let Some(d) = weak.upgrade() {
-                    let _ = d.show();
-                    d.window().request_redraw();
-                    d.window().with_winit_window(|w| {
-                        w.focus_window();
-                    });
-                }
-            });
+            // 首次创建的无边框透明窗口，首帧常常没显示出来（表现为"第一次点查看没反应，
+            // 第二次点才出现"）。稍后再自动 show 两次（等价于自动补点击），确保首次即可见。
+            for delay in [140_u64, 420_u64] {
+                let weak = d.as_weak();
+                slint::Timer::single_shot(Duration::from_millis(delay), move || {
+                    if let Some(d) = weak.upgrade() {
+                        let _ = d.show();
+                        d.window().request_redraw();
+                        d.window().with_winit_window(|w| {
+                            w.focus_window();
+                        });
+                    }
+                });
+            }
         }
     }
 }

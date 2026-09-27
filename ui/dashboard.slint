@@ -18,7 +18,7 @@ export component Dashboard inherits Window {
     in property <string> summary;
     in property <image> app_icon;
     callback close-clicked();
-    callback drag-moved(length, length);
+    callback start-drag();
     title: "今天用啥";
     icon: app_icon;
     no-frame: true;
@@ -39,8 +39,10 @@ export component Dashboard inherits Window {
             Rectangle {
                 height: 52px;
                 drag := TouchArea {
-                    moved => {
-                        root.drag-moved(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                            root.start-drag();
+                        }
                     }
                 }
                 HorizontalLayout {
