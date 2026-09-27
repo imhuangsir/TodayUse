@@ -1,4 +1,5 @@
 pub mod aggregate;
+pub mod collector;
 pub mod config;
 pub mod logging;
 pub mod model;

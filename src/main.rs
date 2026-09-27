@@ -46,6 +46,12 @@ fn main() {
                 println!("  {} - {}s", b.name, b.seconds);
             }
         }
+        Some("collect") => {
+            let cfg = Config::load(&PathBuf::from("config.toml")).unwrap_or_default();
+            let secs: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+            activity_tracker::collector::run_for(&cfg, &args[2], secs).expect("collect");
+            println!("collected {}s -> {}", secs, args[2]);
+        }
         _ => {
             let cfg = Config::load(&PathBuf::from("config.toml")).unwrap_or_default();
             logging::init(&PathBuf::from("activity-tracker.log"));
