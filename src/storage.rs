@@ -152,6 +152,31 @@ impl Storage {
     }
 }
 
+impl Storage {
+    /// 写入一条 AI 总结。
+    pub fn insert_summary(
+        &self,
+        range_start: i64,
+        range_end: i64,
+        granularity: &str,
+        text: &str,
+        model: &str,
+    ) -> Result<(), String> {
+        let created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.conn
+            .execute(
+                "INSERT INTO summaries (range_start,range_end,granularity,text,created_ts,model) \
+                 VALUES (?,?,?,?,?,?)",
+                params![range_start, range_end, granularity, text, created, model],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

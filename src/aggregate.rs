@@ -1,9 +1,10 @@
 use crate::model::Session;
 use crate::parse::extract_domain;
+use serde::Serialize;
 use std::collections::HashMap;
 use time::{Date, Month, OffsetDateTime, Time, UtcOffset};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Bucket {
     pub name: String,
     pub seconds: i64,

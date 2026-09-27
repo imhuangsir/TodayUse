@@ -12,3 +12,4 @@ pub mod media;
 pub mod platform;
 pub mod session;
 pub mod storage;
+pub mod summarize;
