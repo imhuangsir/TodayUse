@@ -175,6 +175,19 @@ impl Storage {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    /// 取某日范围[start,end)最近生成的一条总结文本（按生成时间、其次自增 id 倒序，避免同秒并列）。
+    pub fn latest_summary(&self, range_start: i64, range_end: i64) -> Result<Option<String>, String> {
+        self.conn
+            .query_row(
+                "SELECT text FROM summaries WHERE range_start = ?1 AND range_end = ?2 \
+                 ORDER BY created_ts DESC, id DESC LIMIT 1",
+                params![range_start, range_end],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -246,5 +259,18 @@ mod tests {
         let crashed = all.iter().find(|s| s.app_name == "Crashed").unwrap();
         assert_eq!(crashed.end_ts, 3000);
         assert_eq!(crashed.duration_sec, 2000);
+    }
+
+    #[test]
+    fn summary_latest_returns_newest_for_range() {
+        let st = Storage::open_memory().unwrap();
+        assert_eq!(st.latest_summary(0, 100).unwrap(), None);
+        st.insert_summary(0, 100, "day", "旧总结", "m").unwrap();
+        st.insert_summary(0, 100, "day", "新总结", "m").unwrap();
+        st.insert_summary(0, 100, "day", "别的范围", "m").unwrap(); // 同范围仍取最新
+        st.insert_summary(200, 300, "day", "另一天", "m").unwrap();
+        assert_eq!(st.latest_summary(0, 100).unwrap().as_deref(), Some("别的范围"));
+        assert_eq!(st.latest_summary(200, 300).unwrap().as_deref(), Some("另一天"));
+        assert_eq!(st.latest_summary(999, 1000).unwrap(), None);
     }
 }

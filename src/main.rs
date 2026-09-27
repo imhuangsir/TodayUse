@@ -61,7 +61,7 @@ fn main() {
             }
         }
         Some("collect") => {
-            let cfg = Config::load(&PathBuf::from("config.toml")).unwrap_or_default();
+            let cfg = Config::load(&config_path()).unwrap_or_default();
             let secs: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
             activity_tracker::collector::run_for(&cfg, &args[2], secs).expect("collect");
             println!("collected {}s -> {}", secs, args[2]);
@@ -89,7 +89,7 @@ fn main() {
             }
         }
         Some("summarize") => {
-            let cfg = Config::load(&PathBuf::from("config.toml")).unwrap_or_default();
+            let cfg = Config::load(&config_path()).unwrap_or_default();
             let p: Vec<i64> = args[3].split('-').map(|x| x.parse().unwrap()).collect();
             let mut st = Storage::open(&args[2]).expect("open db");
             let key = std::env::var("AT_API_KEY")

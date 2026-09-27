@@ -79,7 +79,10 @@ pub fn refresh_dashboard(ui: &Dashboard, db_path: &str) -> Result<(), String> {
     ui.set_icons(Rc::new(slint::VecModel::from(icons)).into());
     ui.set_sites(Rc::new(slint::VecModel::from(rows(&aggregate::domain_durations(&sessions), 6))).into());
     ui.set_videos(Rc::new(slint::VecModel::from(rows(&aggregate::top_videos(&sessions), 6))).into());
-    ui.set_summary("（未生成：配置 AI 或点『立即生成总结』后显示）".into());
+    let summary = st
+        .latest_summary(start, end)?
+        .unwrap_or_else(|| "（未生成：配置 AI 后，点托盘『立即生成总结』，再重开本窗口即可显示）".to_string());
+    ui.set_summary(summary.into());
     Ok(())
 }
 
