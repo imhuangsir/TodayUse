@@ -46,13 +46,18 @@ fn winit_icon() -> Option<slint::winit_030::winit::window::Icon> {
 
 /// 打开/刷新仪表盘窗口，并设置任务栏图标（winit 层，修复默认图标）。
 fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &str) {
+    let created;
     {
         let mut wb = win.borrow_mut();
         if let Some(d) = wb.as_ref() {
             let _ = crate::ui::refresh_dashboard(d, db);
+            created = false;
         } else {
             match crate::ui::build_dashboard(db) {
-                Ok(d) => *wb = Some(d),
+                Ok(d) => {
+                    *wb = Some(d);
+                    created = true;
+                }
                 Err(e) => {
                     log::error!("打开仪表盘失败: {e}");
                     return;
@@ -66,6 +71,20 @@ fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &s
             use slint::winit_030::winit::platform::windows::WindowExtWindows;
             w.set_taskbar_icon(winit_icon());
         });
+        if created {
+            // 首次创建：无边框透明窗口的首帧可能尚未绘制（整窗透明→看不见，
+            // 表现为“第一次点查看没反应”）。下一轮事件循环再 show + 强制重绘 + 置前。
+            let weak = d.as_weak();
+            slint::Timer::single_shot(Duration::from_millis(0), move || {
+                if let Some(d) = weak.upgrade() {
+                    let _ = d.show();
+                    d.window().request_redraw();
+                    d.window().with_winit_window(|w| {
+                        w.focus_window();
+                    });
+                }
+            });
+        }
     }
 }
 

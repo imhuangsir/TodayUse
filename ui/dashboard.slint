@@ -1,12 +1,10 @@
 // Bento Box 风格仪表盘：每张卡片都有配色（中等饱和渐变），应用时长为柱状图。
 struct AppBar { name: string, dur: string, frac: float }
 
+// 软件渲染器下：纯色 + border-radius 才能可靠出圆角（渐变/阴影不被裁到圆角）。
 component Card inherits Rectangle {
     background: #FFFFFF;
     border-radius: 24px;
-    drop-shadow-blur: 20px;
-    drop-shadow-color: #00000022;
-    drop-shadow-offset-y: 5px;
 }
 
 export component Dashboard inherits Window {
@@ -51,16 +49,16 @@ export component Dashboard inherits Window {
                     Text { text: "今天用啥 · " + date; font-size: 24px; font-weight: 700; color: #1D1D1F; vertical-alignment: center; }
                     Rectangle { horizontal-stretch: 1; }
                     Rectangle {
-                        width: 34px;
-                        height: 34px;
-                        border-radius: 9px;
-                        background: cta.has-hover ? #E23B3B : #0000000F;
+                        width: 36px;
+                        height: 36px;
+                        border-radius: 10px;
+                        background: cta.has-hover ? #E23B3B : #0000001A;
                         cta := TouchArea {
                             clicked => {
                                 root.close-clicked();
                             }
                         }
-                        Text { text: "✕"; color: cta.has-hover ? #FFFFFF : #6E6E73; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "×"; color: cta.has-hover ? #FFFFFF : #2A2A2E; font-size: 26px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
             }
@@ -70,22 +68,22 @@ export component Dashboard inherits Window {
             vertical-stretch: 1;
             Card {
                 horizontal-stretch: 1;
-                background: @linear-gradient(135deg, #A6C8FF 0%, #D9E7FF 100%);
+                background: #C4DBFF;
                 VerticalLayout {
                     padding: 22px;
                     spacing: 8px;
-                    Text { text: "有效时长"; color: #1D4ED8; font-size: 13px; font-weight: 600; }
+                    Text { text: "有效时长"; color: #1D4ED8; font-size: 18px; font-weight: 700; }
                     Text { text: active; color: #12245B; font-size: 40px; font-weight: 700; }
-                    Text { text: "空闲 " + idle; color: #33477E; font-size: 12px; }
+                    Text { text: "空闲 " + idle; color: #33477E; font-size: 14px; }
                 }
             }
             Card {
                 horizontal-stretch: 2;
-                background: @linear-gradient(135deg, #A7E3C0 0%, #DCF5E7 100%);
+                background: #BEE9D1;
                 VerticalLayout {
                     padding: 20px;
                     spacing: 10px;
-                    Text { text: "应用时长"; color: #15803D; font-size: 13px; font-weight: 600; }
+                    Text { text: "应用时长"; color: #15803D; font-size: 18px; font-weight: 700; }
                     for a[i] in appbars : HorizontalLayout {
                         spacing: 10px;
                         Rectangle {
@@ -126,21 +124,21 @@ export component Dashboard inherits Window {
             vertical-stretch: 1;
             Card {
                 horizontal-stretch: 1;
-                background: @linear-gradient(135deg, #D2BEFA 0%, #EDE4FE 100%);
+                background: #DFCDFB;
                 VerticalLayout {
                     padding: 20px;
                     spacing: 6px;
-                    Text { text: "Top 网站"; color: #6D28D9; font-size: 13px; font-weight: 600; }
+                    Text { text: "Top 网站"; color: #6D28D9; font-size: 18px; font-weight: 700; }
                     for s in sites : Text { text: s; color: #2E1A54; font-size: 14px; }
                 }
             }
             Card {
                 horizontal-stretch: 1;
-                background: @linear-gradient(135deg, #FBC79E 0%, #FDE7D3 100%);
+                background: #FBD3B0;
                 VerticalLayout {
                     padding: 20px;
                     spacing: 6px;
-                    Text { text: "Top 视频"; color: #C2410C; font-size: 13px; font-weight: 600; }
+                    Text { text: "Top 视频"; color: #C2410C; font-size: 18px; font-weight: 700; }
                     for v in videos : Text { text: v; color: #5A2A11; font-size: 14px; }
                 }
             }
@@ -148,11 +146,11 @@ export component Dashboard inherits Window {
 
         Card {
             height: 120px;
-            background: @linear-gradient(135deg, #B9DFE4 0%, #E4F3F5 100%);
+            background: #CBE8EC;
             VerticalLayout {
                 padding: 18px;
                 spacing: 6px;
-                Text { text: "AI 总结"; color: #0E7490; font-size: 13px; font-weight: 600; }
+                Text { text: "AI 总结"; color: #0E7490; font-size: 18px; font-weight: 700; }
                 Text { text: summary; color: #123C44; font-size: 13px; wrap: word-wrap; }
             }
         }
