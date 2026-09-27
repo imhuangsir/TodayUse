@@ -1,0 +1,132 @@
+// Bento Box 风格仪表盘：每张卡片都有配色（中等饱和渐变），应用时长为柱状图。
+struct AppBar { name: string, dur: string, frac: float }
+
+component Card inherits Rectangle {
+    background: #FFFFFF;
+    border-radius: 16px;
+    drop-shadow-blur: 20px;
+    drop-shadow-color: #00000022;
+    drop-shadow-offset-y: 5px;
+}
+
+export component Dashboard inherits Window {
+    in property <string> date;
+    in property <string> active;
+    in property <string> idle;
+    in property <[AppBar]> appbars;
+    in property <[image]> icons;
+    in property <[string]> sites;
+    in property <[string]> videos;
+    in property <string> summary;
+    in property <image> app_icon;
+    title: "今天用啥";
+    icon: app_icon;
+    background: #EEEFF2;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+    preferred-width: 980px;
+    preferred-height: 640px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+
+        HorizontalLayout {
+            spacing: 10px;
+            Image { width: 30px; height: 30px; source: app_icon; image-fit: contain; }
+            Text { text: "今天用啥 · " + date; font-size: 22px; font-weight: 700; color: #1D1D1F; vertical-alignment: center; }
+        }
+
+        HorizontalLayout {
+            spacing: 16px;
+            vertical-stretch: 1;
+            Card {
+                horizontal-stretch: 1;
+                background: @linear-gradient(135deg, #A6C8FF 0%, #D9E7FF 100%);
+                VerticalLayout {
+                    padding: 22px;
+                    spacing: 8px;
+                    Text { text: "有效时长"; color: #1D4ED8; font-size: 13px; font-weight: 600; }
+                    Text { text: active; color: #12245B; font-size: 40px; font-weight: 700; }
+                    Text { text: "空闲 " + idle; color: #33477E; font-size: 12px; }
+                }
+            }
+            Card {
+                horizontal-stretch: 2;
+                background: @linear-gradient(135deg, #A7E3C0 0%, #DCF5E7 100%);
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    Text { text: "应用时长"; color: #15803D; font-size: 13px; font-weight: 600; }
+                    for a[i] in appbars : HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 7px;
+                            background: #FFFFFFC0;
+                            Image { width: 20px; height: 20px; source: icons[i]; image-fit: contain; }
+                        }
+                        VerticalLayout {
+                            spacing: 3px;
+                            HorizontalLayout {
+                                Text { text: a.name; color: #14361F; font-size: 13px; }
+                                Rectangle { horizontal-stretch: 1; }
+                                Text { text: a.dur; color: #2F5B3F; font-size: 12px; }
+                            }
+                            Rectangle {
+                                height: 7px;
+                                border-radius: 3px;
+                                background: #00000018;
+                                Rectangle {
+                                    x: 0;
+                                    y: 0;
+                                    height: 7px;
+                                    border-radius: 3px;
+                                    width: parent.width * a.frac;
+                                    background: #15803D;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 16px;
+            vertical-stretch: 1;
+            Card {
+                horizontal-stretch: 1;
+                background: @linear-gradient(135deg, #D2BEFA 0%, #EDE4FE 100%);
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 6px;
+                    Text { text: "Top 网站"; color: #6D28D9; font-size: 13px; font-weight: 600; }
+                    for s in sites : Text { text: s; color: #2E1A54; font-size: 14px; }
+                }
+            }
+            Card {
+                horizontal-stretch: 1;
+                background: @linear-gradient(135deg, #FBC79E 0%, #FDE7D3 100%);
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 6px;
+                    Text { text: "Top 视频"; color: #C2410C; font-size: 13px; font-weight: 600; }
+                    for v in videos : Text { text: v; color: #5A2A11; font-size: 14px; }
+                }
+            }
+        }
+
+        Card {
+            height: 120px;
+            background: @linear-gradient(135deg, #B9DFE4 0%, #E4F3F5 100%);
+            VerticalLayout {
+                padding: 18px;
+                spacing: 6px;
+                Text { text: "AI 总结"; color: #0E7490; font-size: 13px; font-weight: 600; }
+                Text { text: summary; color: #123C44; font-size: 13px; wrap: word-wrap; }
+            }
+        }
+    }
+}

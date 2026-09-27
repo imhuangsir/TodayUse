@@ -21,6 +21,24 @@ pub fn is_excluded(app_name: &str, process_path: &str, excluded: &[String]) -> b
     })
 }
 
+/// 系统/外壳进程（锁屏、开始菜单、搜索、UWP 框架宿主等）与本程序自身，无记录意义，恒排除。
+fn is_system_noise(exe_lower: &str) -> bool {
+    const NOISE: &[&str] = &[
+        "lockapp.exe",
+        "shellexperiencehost.exe",
+        "startmenuexperiencehost.exe",
+        "searchhost.exe",
+        "searchapp.exe",
+        "textinputhost.exe",
+        "applicationframehost.exe",
+        "dwm.exe",
+        "sihost.exe",
+        "ctfmon.exe",
+        "activity-tracker.exe",
+    ];
+    NOISE.contains(&exe_lower)
+}
+
 /// 从前台快照字段组装活动事件（app_name = 进程路径的文件名）。
 pub fn build_event(ts: i64, process_path: &str, window_title: &str, is_idle: bool) -> ActivityEvent {
     ActivityEvent {
@@ -81,6 +99,7 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
             // 排除用户配置的应用 + 开机自启程序（那些是工具，无记录意义）
             if !is_excluded(&raw, &info.process_path, &cfg.excluded_apps)
                 && !autostart_set.contains(&raw_lower)
+                && !is_system_noise(&raw_lower)
             {
                 let is_edge = raw_lower.contains("msedge");
                 let is_private = is_edge && info.title.contains("InPrivate");
@@ -127,6 +146,137 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
 
         if Instant::now() >= deadline {
             break;
+        }
+        std::thread::sleep(poll);
+    }
+
+    if let Some(done) = sb.finish(now_unix()) {
+        buffer.push(done);
+    }
+    if !buffer.is_empty() {
+        storage.insert_sessions(&buffer)?;
+    }
+    Ok(())
+}
+
+/// 采集控制：暂停/停止标志（托盘线程与采集线程共享）。
+#[cfg(windows)]
+pub struct Control {
+    pub paused: std::sync::atomic::AtomicBool,
+    pub stop: std::sync::atomic::AtomicBool,
+}
+#[cfg(windows)]
+impl Control {
+    pub fn new() -> Self {
+        Self {
+            paused: std::sync::atomic::AtomicBool::new(false),
+            stop: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+#[cfg(windows)]
+impl Default for Control {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 常驻采集：一直跑到 ctrl.stop 置位；ctrl.paused 时结算并暂停累计。
+#[cfg(windows)]
+pub fn run_daemon(
+    cfg: &crate::config::Config,
+    db_path: &str,
+    ctrl: std::sync::Arc<Control>,
+) -> Result<(), String> {
+    use crate::model::Session;
+    use crate::platform;
+    use crate::session::SessionBuilder;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    let mut storage = crate::storage::Storage::open(db_path)?;
+    storage.recover_phantom(cfg.poll_interval_sec as i64 * 3)?;
+    let autostart_set = crate::autostart::autostart_exes();
+
+    let mut sb = SessionBuilder::new();
+    let mut buffer: Vec<Session> = Vec::new();
+    let poll = Duration::from_secs(cfg.poll_interval_sec.max(1));
+    let threshold_ms = cfg.idle_threshold_sec.saturating_mul(1000).min(u32::MAX as u64) as u32;
+    let mut last_flush = Instant::now();
+    let now_unix = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+
+    while !ctrl.stop.load(Ordering::Relaxed) {
+        let ts = now_unix();
+        if ctrl.paused.load(Ordering::Relaxed) {
+            if let Some(done) = sb.finish(ts) {
+                buffer.push(done);
+            }
+            if !buffer.is_empty() {
+                storage.insert_sessions(&buffer)?;
+                buffer.clear();
+            }
+            std::thread::sleep(poll);
+            continue;
+        }
+        let media = crate::media::media_snapshot();
+        let fg = platform::foreground_snapshot();
+        let fg_is_edge = fg
+            .as_ref()
+            .map(|i| basename(&i.process_path).to_ascii_lowercase().contains("msedge"))
+            .unwrap_or(false);
+        let media_playing = matches!(
+            media.as_ref().map(|m| m.status),
+            Some(crate::model::PlaybackStatus::Playing)
+        );
+        let watching = fg_is_edge && media_playing;
+        let idle = is_idle(platform::last_input_tick(), platform::now_tick(), threshold_ms) && !watching;
+
+        if let Some(info) = fg {
+            let raw = basename(&info.process_path);
+            let raw_lower = raw.to_ascii_lowercase();
+            if !is_excluded(&raw, &info.process_path, &cfg.excluded_apps)
+                && !autostart_set.contains(&raw_lower)
+                && !is_system_noise(&raw_lower)
+            {
+                let is_edge = raw_lower.contains("msedge");
+                let is_private = is_edge && info.title.contains("InPrivate");
+                if !(is_private && !cfg.record_private) {
+                    let mut ev = build_event(ts, &info.process_path, &info.title, idle);
+                    ev.app_name = crate::friendly::friendly_name(&raw);
+                    ev.is_private = is_private;
+                    if is_edge {
+                        ev.edge_url = crate::edge::edge_url(info.hwnd);
+                        ev.page_title = crate::parse::parse_edge_title(&info.title);
+                    }
+                    if let Some(done) = sb.on_activity(&ev) {
+                        buffer.push(done);
+                    }
+                }
+            }
+        }
+        if watching {
+            if let Some(m) = media {
+                sb.on_media(&crate::model::MediaEvent {
+                    ts,
+                    media_title: m.title,
+                    media_player: m.player,
+                    media_status: m.status,
+                    position_sec: m.position_sec,
+                    duration_sec: m.duration_sec,
+                });
+            }
+        }
+        sb.touch(ts);
+        storage.set_heartbeat(ts)?;
+
+        if buffer.len() >= cfg.flush_max_events
+            || last_flush.elapsed() >= Duration::from_secs(cfg.flush_interval_sec.max(1))
+        {
+            if !buffer.is_empty() {
+                storage.insert_sessions(&buffer)?;
+                buffer.clear();
+            }
+            last_flush = Instant::now();
         }
         std::thread::sleep(poll);
     }

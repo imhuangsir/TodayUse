@@ -52,6 +52,9 @@ fn main() {
             activity_tracker::collector::run_for(&cfg, &args[2], secs).expect("collect");
             println!("collected {}s -> {}", secs, args[2]);
         }
+        Some("ui") => {
+            activity_tracker::ui::show_dashboard(&args[2]).expect("ui");
+        }
         Some("dump") => {
             let p: Vec<i64> = args[3].split('-').map(|x| x.parse().unwrap()).collect();
             let (start, end) =
@@ -104,11 +107,34 @@ fn main() {
                 println!("{}", serde_json::to_string_pretty(&digest).unwrap());
             }
         }
+        None | Some("tray") => {
+            let cfg = Config::load(&config_path()).unwrap_or_default();
+            logging::init(&log_path());
+            let db = data_db_path();
+            if let Some(dir) = std::path::Path::new(&db).parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            activity_tracker::tray::run_tray(cfg, db).expect("tray");
+        }
         _ => {
-            let cfg = Config::load(&PathBuf::from("config.toml")).unwrap_or_default();
-            logging::init(&PathBuf::from("activity-tracker.log"));
-            let _ = cfg;
-            println!("activity-tracker core (M1). 用法: replay <events.jsonl> <db> | report <db> <YYYY-MM-DD>");
+            println!("用法: (无参=托盘常驻) | collect <db> <秒> | ui <db> | dump <db> <日期> | report <db> <日期> | summarize <db> <日期> | replay <jsonl> <db>");
         }
     }
+}
+
+fn appdata_dir(env_key: &str) -> PathBuf {
+    let base = std::env::var(env_key).unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(base).join("ActivityTracker")
+}
+fn data_db_path() -> String {
+    appdata_dir("LOCALAPPDATA")
+        .join("data.db")
+        .to_string_lossy()
+        .into_owned()
+}
+fn config_path() -> PathBuf {
+    appdata_dir("APPDATA").join("config.toml")
+}
+fn log_path() -> PathBuf {
+    appdata_dir("LOCALAPPDATA").join("activity-tracker.log")
 }
