@@ -69,6 +69,16 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
                 }
             }
         }
+        if let Some(m) = crate::media::media_snapshot() {
+            sb.on_media(&crate::model::MediaEvent {
+                ts,
+                media_title: m.title,
+                media_player: m.player,
+                media_status: m.status,
+                position_sec: m.position_sec,
+                duration_sec: m.duration_sec,
+            });
+        }
         sb.touch(ts);
         storage.set_heartbeat(ts)?;
 
