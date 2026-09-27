@@ -1,8 +1,13 @@
 pub mod aggregate;
+#[cfg(windows)]
+pub mod autostart;
 pub mod collector;
 pub mod config;
 #[cfg(windows)]
 pub mod edge;
+pub mod friendly;
+#[cfg(windows)]
+pub mod icon;
 pub mod logging;
 pub mod model;
 pub mod parse;
@@ -15,3 +20,4 @@ pub mod secret;
 pub mod session;
 pub mod storage;
 pub mod summarize;
+pub mod ui;

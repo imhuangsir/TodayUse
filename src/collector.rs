@@ -46,6 +46,7 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
 
     let mut storage = Storage::open(db_path)?;
     storage.recover_phantom(cfg.poll_interval_sec as i64 * 3)?;
+    let autostart_set = crate::autostart::autostart_exes();
 
     let mut sb = SessionBuilder::new();
     let mut buffer: Vec<Session> = Vec::new();
@@ -59,15 +60,34 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
 
     loop {
         let ts = now_unix();
-        let idle = is_idle(platform::last_input_tick(), platform::now_tick(), threshold_ms);
-        if let Some(info) = platform::foreground_snapshot() {
-            let app = basename(&info.process_path);
-            if !is_excluded(&app, &info.process_path, &cfg.excluded_apps) {
-                let is_edge = app.to_ascii_lowercase().contains("msedge");
+        let media = crate::media::media_snapshot();
+        let fg = platform::foreground_snapshot();
+        let fg_is_edge = fg
+            .as_ref()
+            .map(|i| basename(&i.process_path).to_ascii_lowercase().contains("msedge"))
+            .unwrap_or(false);
+        let media_playing = matches!(
+            media.as_ref().map(|m| m.status),
+            Some(crate::model::PlaybackStatus::Playing)
+        );
+        // 真正在看视频 = 前台是 Edge 且视频在播放；后台放音乐或暂停都不算
+        let watching = fg_is_edge && media_playing;
+        // 只有"前台看视频"能抵消无键鼠输入的空闲判定
+        let idle = is_idle(platform::last_input_tick(), platform::now_tick(), threshold_ms) && !watching;
+
+        if let Some(info) = fg {
+            let raw = basename(&info.process_path);
+            let raw_lower = raw.to_ascii_lowercase();
+            // 排除用户配置的应用 + 开机自启程序（那些是工具，无记录意义）
+            if !is_excluded(&raw, &info.process_path, &cfg.excluded_apps)
+                && !autostart_set.contains(&raw_lower)
+            {
+                let is_edge = raw_lower.contains("msedge");
                 let is_private = is_edge && info.title.contains("InPrivate");
                 // 隐私模式默认不记录
                 if !(is_private && !cfg.record_private) {
                     let mut ev = build_event(ts, &info.process_path, &info.title, idle);
+                    ev.app_name = crate::friendly::friendly_name(&raw);
                     ev.is_private = is_private;
                     if is_edge {
                         ev.edge_url = crate::edge::edge_url(info.hwnd);
@@ -79,15 +99,18 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
                 }
             }
         }
-        if let Some(m) = crate::media::media_snapshot() {
-            sb.on_media(&crate::model::MediaEvent {
-                ts,
-                media_title: m.title,
-                media_player: m.player,
-                media_status: m.status,
-                position_sec: m.position_sec,
-                duration_sec: m.duration_sec,
-            });
+        // 媒体只在"真正在看"时计入（视频播放时长精确到前台+播放）
+        if watching {
+            if let Some(m) = media {
+                sb.on_media(&crate::model::MediaEvent {
+                    ts,
+                    media_title: m.title,
+                    media_player: m.player,
+                    media_status: m.status,
+                    position_sec: m.position_sec,
+                    duration_sec: m.duration_sec,
+                });
+            }
         }
         sb.touch(ts);
         storage.set_heartbeat(ts)?;
