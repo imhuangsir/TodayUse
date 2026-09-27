@@ -8,6 +8,15 @@ pub enum AiGranularity {
     Hour,
 }
 
+/// AI 接口风格：openai = /chat/completions；anthropic = /messages（Claude 原生）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AiApiStyle {
+    #[default]
+    OpenAI,
+    Anthropic,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Desensitize {
@@ -27,6 +36,7 @@ pub struct Config {
     pub record_private: bool,
     pub ai_enabled: bool,
     pub ai_granularity: AiGranularity,
+    pub ai_api_style: AiApiStyle,
     pub ai_base_url: String,
     pub ai_model: String,
     pub reduced_motion: bool,
@@ -46,6 +56,7 @@ impl Default for Config {
             record_private: false,
             ai_enabled: false,
             ai_granularity: AiGranularity::Day,
+            ai_api_style: AiApiStyle::OpenAI,
             ai_base_url: String::new(),
             ai_model: String::new(),
             reduced_motion: false,

@@ -72,6 +72,25 @@ fn main() {
         Some("diagwin") => {
             activity_tracker::ui::diag_run(&args[2]);
         }
+        Some("set-key") => {
+            // 从 stdin 读入 API key（避免出现在命令行/进程列表），DPAPI 加密存到 key.bin。
+            use std::io::Read;
+            let mut key = String::new();
+            let _ = std::io::stdin().read_to_string(&mut key);
+            let key = key.trim();
+            if key.is_empty() {
+                eprintln!("未读到 key（用法：echo <key> | activity-tracker set-key）");
+            } else {
+                let path = appdata_dir("LOCALAPPDATA").join("key.bin");
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                match activity_tracker::secret::save_key(&path, key) {
+                    Ok(()) => println!("API key 已加密(DPAPI)保存到 {}", path.display()),
+                    Err(e) => eprintln!("保存失败: {e}"),
+                }
+            }
+        }
         Some("dump") => {
             let p: Vec<i64> = args[3].split('-').map(|x| x.parse().unwrap()).collect();
             let (start, end) =

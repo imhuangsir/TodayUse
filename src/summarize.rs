@@ -59,8 +59,9 @@ pub fn desensitize(mut d: Digest, cfg: &Config) -> Digest {
 
 /// 组 (system, user) 提示词。user 内嵌摘要 JSON。
 pub fn build_prompt(d: &Digest) -> (String, String) {
-    let system = "你是活动日志助手。只依据给定的结构化数据，用简洁自然的中文写一段当天活动总结：\
-        时间分布、主要应用/网站/视频、可能的意图。不要编造数据里没有的数字或事实。"
+    let system = "你是活动日志助手。只依据给定的结构化数据，用简洁自然的中文写当天活动总结：\
+        点出时间分布、主要应用/网站/视频与可能的意图。控制在 3 句、120 字以内，不要分段、\
+        不要罗列清单，不要编造数据里没有的数字或事实。"
         .to_string();
     let json = serde_json::to_string_pretty(d).unwrap_or_default();
     let user = format!(
@@ -107,6 +108,50 @@ pub fn call_openai(
     parse_content(&text).ok_or_else(|| format!("无法解析响应: {text}"))
 }
 
+/// 从 Anthropic Messages 响应提取所有 type=="text" 块并拼接（跳过 thinking 块）。
+pub fn parse_anthropic_content(json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let arr = v.get("content")?.as_array()?;
+    let mut out = String::new();
+    for block in arr {
+        if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+            if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
+                out.push_str(t);
+            }
+        }
+    }
+    if out.trim().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// 调用 Anthropic 原生 /messages（Claude）。base_url 形如 https://host/v1。system 走顶层字段。
+pub fn call_anthropic(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+) -> Result<String, String> {
+    let url = format!("{}/messages", base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 4096,
+        "system": system,
+        "messages": [{"role": "user", "content": user}]
+    });
+    let resp = ureq::post(&url)
+        .set("x-api-key", api_key)
+        .set("anthropic-version", "2023-06-01")
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| e.to_string())?;
+    let text = resp.into_string().map_err(|e| e.to_string())?;
+    parse_anthropic_content(&text).ok_or_else(|| format!("无法解析响应: {text}"))
+}
+
 /// 生成某日总结并存入 summaries；返回总结文本。
 pub fn generate_for_day(
     storage: &mut crate::storage::Storage,
@@ -122,7 +167,14 @@ pub fn generate_for_day(
     let date = format!("{year:04}-{month:02}-{day:02}");
     let digest = desensitize(build_digest(&date, &sessions), cfg);
     let (system, user) = build_prompt(&digest);
-    let content = call_openai(&cfg.ai_base_url, api_key, &cfg.ai_model, &system, &user)?;
+    let content = match cfg.ai_api_style {
+        crate::config::AiApiStyle::OpenAI => {
+            call_openai(&cfg.ai_base_url, api_key, &cfg.ai_model, &system, &user)?
+        }
+        crate::config::AiApiStyle::Anthropic => {
+            call_anthropic(&cfg.ai_base_url, api_key, &cfg.ai_model, &system, &user)?
+        }
+    };
     storage.insert_summary(start, end, "day", &content, &cfg.ai_model)?;
     Ok(content)
 }
@@ -189,6 +241,17 @@ mod tests {
         let json = r#"{"choices":[{"message":{"role":"assistant","content":"今天在写代码。"}}]}"#;
         assert_eq!(parse_content(json).as_deref(), Some("今天在写代码。"));
         assert_eq!(parse_content("not json"), None);
+    }
+
+    #[test]
+    fn parse_anthropic_skips_thinking_keeps_text() {
+        let json = r#"{"content":[{"type":"thinking","thinking":"想一想"},{"type":"text","text":"今天在写代码。"},{"type":"text","text":"还看了视频。"}]}"#;
+        assert_eq!(
+            parse_anthropic_content(json).as_deref(),
+            Some("今天在写代码。还看了视频。")
+        );
+        assert_eq!(parse_anthropic_content(r#"{"content":[{"type":"thinking","thinking":"只有思考"}]}"#), None);
+        assert_eq!(parse_anthropic_content("not json"), None);
     }
 
     #[test]
