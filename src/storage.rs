@@ -42,6 +42,8 @@ impl Storage {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
         conn.pragma_update(None, "journal_mode", "WAL").map_err(|e| e.to_string())?;
         conn.pragma_update(None, "synchronous", "NORMAL").map_err(|e| e.to_string())?;
+        // 多连接并发（采集守护写 + 仪表盘/总结读写同一库）：等锁 5s 而非立即报 BUSY。
+        conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(|e| e.to_string())?;
         conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
         Ok(Storage { conn })
     }

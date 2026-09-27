@@ -3,13 +3,15 @@
 
 use std::collections::HashSet;
 use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
-    KEY_READ,
+    RegCloseKey, RegDeleteValueW, RegEnumValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE, REG_SZ,
 };
 
 const RUN_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+/// 本程序在 Run 键里的值名。
+const APP_RUN_NAME: &str = "今天用啥";
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -79,6 +81,34 @@ pub fn autostart_exes() -> HashSet<String> {
     read_run_key(HKEY_CURRENT_USER, &mut out);
     read_run_key(HKEY_LOCAL_MACHINE, &mut out);
     out
+}
+
+/// 根据 enable 在 HKCU Run 键里写入/删除本程序的开机自启项（指向 exe_path）。
+pub fn set_autostart(enable: bool, exe_path: &str) -> Result<(), String> {
+    unsafe {
+        let sub = wide(RUN_PATH);
+        let mut hkey = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), 0, KEY_SET_VALUE, &mut hkey)
+            != ERROR_SUCCESS
+        {
+            return Err("打开 HKCU Run 键失败".into());
+        }
+        let name = wide(APP_RUN_NAME);
+        let rc = if enable {
+            let val = wide(&format!("\"{exe_path}\""));
+            let bytes = std::slice::from_raw_parts(val.as_ptr() as *const u8, val.len() * 2);
+            RegSetValueExW(hkey, PCWSTR(name.as_ptr()), 0, REG_SZ, Some(bytes))
+        } else {
+            RegDeleteValueW(hkey, PCWSTR(name.as_ptr()))
+        };
+        let _ = RegCloseKey(hkey);
+        // 关闭自启时值本就不存在，视为成功
+        if rc == ERROR_SUCCESS || (!enable && rc == ERROR_FILE_NOT_FOUND) {
+            Ok(())
+        } else {
+            Err(format!("写 Run 值失败: {rc:?}"))
+        }
+    }
 }
 
 #[cfg(test)]

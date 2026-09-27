@@ -75,6 +75,12 @@ fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &s
 
 /// 启动托盘 + 后台采集，进入事件循环（阻塞至退出）。
 pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
+    // 按配置写/删开机自启项（指向当前 exe）。
+    if let Ok(exe) = std::env::current_exe() {
+        if let Err(e) = crate::autostart::set_autostart(cfg.autostart, &exe.to_string_lossy()) {
+            log::warn!("设置开机自启失败: {e}");
+        }
+    }
     let ctrl = Arc::new(Control::new());
     {
         let ctrl = ctrl.clone();

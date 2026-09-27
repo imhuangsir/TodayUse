@@ -15,10 +15,20 @@ pub struct MediaSnapshot {
     pub duration_sec: Option<i64>,
 }
 
+thread_local! {
+    // 媒体会话管理器创建一次即可复用，避免每轮 RequestAsync().get() 的开销。
+    static MGR: std::cell::RefCell<Option<Mgr>> = const { std::cell::RefCell::new(None) };
+}
+
 /// 当前系统媒体会话快照（YouTube/B站/播放器等上报 SMTC 时可得）。
 pub fn media_snapshot() -> Option<MediaSnapshot> {
-    let mgr = Mgr::RequestAsync().ok()?.get().ok()?;
-    let session = mgr.GetCurrentSession().ok()?;
+    let session = MGR.with(|cell| {
+        let mut m = cell.borrow_mut();
+        if m.is_none() {
+            *m = Mgr::RequestAsync().ok()?.get().ok();
+        }
+        m.as_ref()?.GetCurrentSession().ok()
+    })?;
 
     let props = session.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
     let title = props.Title().ok()?.to_string();

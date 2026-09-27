@@ -256,16 +256,26 @@ pub fn show_centered(d: &Dashboard) {
     d.window().with_winit_window(|w| w.focus_window());
 }
 
-/// 诊断：预热后打开窗口并保持，供外部脚本测试拖动（on_start_drag 会写日志）。
+/// 诊断辅助：当前前台窗口标题（判断我们的窗口是否真的到了最前）。
+#[cfg(windows)]
+fn diag_foreground_title() -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+    unsafe {
+        let h = GetForegroundWindow();
+        if h.0.is_null() {
+            return "<none>".into();
+        }
+        let mut buf = [0u16; 128];
+        let n = GetWindowTextW(h, &mut buf);
+        String::from_utf16_lossy(&buf[..n as usize])
+    }
+}
+
+/// 诊断：预热后反复 开→检查→关，统计首次显示偶发失败的形态（可见? 到最前?）。
 pub fn diag_run(db_path: &str) {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Duration;
-
-    // 初始化日志到临时文件，便于观察 on_start_drag 是否触发
-    let log = std::env::temp_dir().join("at_diag.log");
-    crate::logging::init(&log);
-    println!("log -> {}", log.display());
 
     let win: Rc<RefCell<Option<Dashboard>>> = Rc::new(RefCell::new(None));
     match build_dashboard(db_path) {
@@ -273,7 +283,7 @@ pub fn diag_run(db_path: &str) {
             let _ = d.show();
             prewarm_hide(&d);
             *win.borrow_mut() = Some(d);
-            println!("[t0] 预热完成");
+            println!("[t0] 预热完成，开始循环开关窗测试");
         }
         Err(e) => {
             println!("build 失败: {e}");
@@ -281,19 +291,39 @@ pub fn diag_run(db_path: &str) {
         }
     }
 
-    let db1 = db_path.to_string();
+    let step = Rc::new(Cell::new(0u32));
+    let timer = slint::Timer::default();
     let w = win.clone();
-    slint::Timer::single_shot(Duration::from_millis(1200), move || {
-        if let Some(d) = w.borrow().as_ref() {
-            let _ = refresh_dashboard(d, &db1);
-            show_centered(d);
-            println!("[t1200] 已打开窗口（居中），保持 12s 供拖动测试");
+    let step2 = step.clone();
+    timer.start(slint::TimerMode::Repeated, Duration::from_millis(500), move || {
+        let s = step2.get();
+        step2.set(s + 1);
+        let cycle = s / 2;
+        if cycle >= 20 {
+            let _ = slint::quit_event_loop();
+            return;
+        }
+        let Some(d) = w.borrow().as_ref().map(|d| d.clone_strong()) else { return };
+        if s % 2 == 0 {
+            show_centered(&d);
+        } else {
+            let mut vis = None;
+            let mut lvl_ok = false;
+            d.window().with_winit_window(|win| {
+                vis = win.is_visible();
+                lvl_ok = true;
+            });
+            let fg = diag_foreground_title();
+            let is_front = fg == "今天用啥";
+            let mark = if vis == Some(true) && is_front { "OK" } else { "**FAIL**" };
+            println!(
+                "cycle {cycle:02}: {mark} visible={vis:?} foreground_is_us={is_front} fg='{fg}' winit_ok={lvl_ok}"
+            );
+            let _ = d.hide();
         }
     });
 
-    slint::Timer::single_shot(Duration::from_millis(13000), || {
-        let _ = slint::quit_event_loop();
-    });
+    let _keep = timer;
     let _ = slint::run_event_loop_until_quit();
     println!("[end] 循环退出");
 }

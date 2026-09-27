@@ -44,33 +44,6 @@ pub fn parse_edge_title(window_title: &str) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct VideoInfo {
-    pub site: String,
-    pub title: String,
-}
-
-/// 识别常见视频站点并提取视频标题。page_title 传已解析的页面标题。
-pub fn detect_video(url: &str, page_title: Option<&str>) -> Option<VideoInfo> {
-    let domain = extract_domain(url)?;
-    let title = page_title.unwrap_or("").trim();
-    if (domain.ends_with("youtube.com") && url.contains("/watch")) || domain == "youtu.be" {
-        let t = title.strip_suffix(" - YouTube").unwrap_or(title).trim();
-        return Some(VideoInfo { site: "YouTube".into(), title: t.to_string() });
-    }
-    if domain.ends_with("bilibili.com") && url.contains("/video/") {
-        let mut t = title;
-        for suf in ["_哔哩哔哩_bilibili", "_哔哩哔哩bilibili", "_bilibili"] {
-            if let Some(s) = t.strip_suffix(suf) {
-                t = s.trim_end_matches('_');
-                break;
-            }
-        }
-        return Some(VideoInfo { site: "Bilibili".into(), title: t.trim().to_string() });
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,24 +67,5 @@ mod tests {
             parse_edge_title("标题_哔哩哔哩_bilibili - 个人 - Microsoft Edge").as_deref(),
             Some("标题_哔哩哔哩_bilibili - 个人")
         );
-    }
-
-    #[test]
-    fn detect_youtube() {
-        let v = detect_video("https://www.youtube.com/watch?v=abc", Some("某视频 - YouTube")).unwrap();
-        assert_eq!(v.site, "YouTube");
-        assert_eq!(v.title, "某视频");
-    }
-
-    #[test]
-    fn detect_bilibili() {
-        let v = detect_video("https://www.bilibili.com/video/BV1xx", Some("标题_哔哩哔哩_bilibili")).unwrap();
-        assert_eq!(v.site, "Bilibili");
-        assert_eq!(v.title, "标题");
-    }
-
-    #[test]
-    fn detect_none_for_normal_site() {
-        assert_eq!(detect_video("https://github.com/x", Some("GitHub")), None);
     }
 }

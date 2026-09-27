@@ -21,6 +21,22 @@ fn set_app_user_model_id() {
     }
 }
 
+/// 命名互斥量做单实例：已存在则返回 false（应退出）。句柄随进程存活到结束（HANDLE 无 Drop，不会关闭）。
+#[cfg(windows)]
+fn acquire_single_instance() -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = "JinTianYongSha_SingleInstance\0".encode_utf16().collect();
+    unsafe {
+        match CreateMutexW(None, true, PCWSTR(name.as_ptr())) {
+            // 互斥量已存在 → 已有实例在运行
+            Ok(_h) => GetLastError() != ERROR_ALREADY_EXISTS,
+            Err(_) => true, // 创建失败就不拦，照常运行
+        }
+    }
+}
+
 fn main() {
     #[cfg(windows)]
     set_app_user_model_id();
@@ -144,6 +160,11 @@ fn main() {
             }
         }
         None | Some("tray") => {
+            #[cfg(windows)]
+            if !acquire_single_instance() {
+                // 已有一个实例在运行，直接退出，避免两个采集守护抢写同一个库。
+                return;
+            }
             let cfg = Config::load(&config_path()).unwrap_or_default();
             logging::init(&log_path());
             let db = data_db_path();

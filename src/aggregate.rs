@@ -2,7 +2,7 @@ use crate::model::Session;
 use crate::parse::extract_domain;
 use serde::Serialize;
 use std::collections::HashMap;
-use time::{Date, Month, OffsetDateTime, Time, UtcOffset};
+use time::{Date, Month, Time, UtcOffset};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Bucket {
@@ -67,11 +67,6 @@ pub fn local_day_bounds(year: i32, month: u8, day: u8, offset: UtcOffset) -> (i6
     (start.unix_timestamp(), end.unix_timestamp())
 }
 
-/// 某 UTC 秒对应的本地小时 0-23。
-pub fn local_hour(ts: i64, offset: UtcOffset) -> u8 {
-    OffsetDateTime::from_unix_timestamp(ts).unwrap().to_offset(offset).hour()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,11 +119,9 @@ mod tests {
     }
 
     #[test]
-    fn day_bounds_and_hour_local() {
+    fn day_bounds_span_one_day() {
         let off8 = UtcOffset::from_hms(8, 0, 0).unwrap();
         let (start, end) = local_day_bounds(2026, 1, 15, off8);
         assert_eq!(end - start, 86400);
-        assert_eq!(local_hour(start, off8), 0);
-        assert_eq!(local_hour(start - 1, off8), 23);
     }
 }

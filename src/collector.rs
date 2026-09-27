@@ -53,13 +53,96 @@ pub fn build_event(ts: i64, process_path: &str, window_title: &str, is_idle: boo
     }
 }
 
+/// 单轮采集：抓前台/媒体/空闲，按排除规则并入会话构建器（run_for 与 run_daemon 共用）。
+#[cfg(windows)]
+fn collect_once(
+    cfg: &crate::config::Config,
+    autostart_set: &std::collections::HashSet<String>,
+    threshold_ms: u32,
+    ts: i64,
+    sb: &mut crate::session::SessionBuilder,
+    buffer: &mut Vec<crate::model::Session>,
+) {
+    use crate::platform;
+    let media = crate::media::media_snapshot();
+    let fg = platform::foreground_snapshot();
+    let fg_is_edge = fg
+        .as_ref()
+        .map(|i| basename(&i.process_path).to_ascii_lowercase().contains("msedge"))
+        .unwrap_or(false);
+    let media_playing = matches!(
+        media.as_ref().map(|m| m.status),
+        Some(crate::model::PlaybackStatus::Playing)
+    );
+    // 真正在看视频 = 前台是 Edge 且视频在播放；后台放音乐或暂停都不算
+    let watching = fg_is_edge && media_playing;
+    // 只有"前台看视频"能抵消无键鼠输入的空闲判定
+    let idle = is_idle(platform::last_input_tick(), platform::now_tick(), threshold_ms) && !watching;
+
+    if let Some(info) = fg {
+        let raw = basename(&info.process_path);
+        let raw_lower = raw.to_ascii_lowercase();
+        // 排除用户配置的应用 + 开机自启程序（那些是工具，无记录意义）+ 系统外壳噪声
+        if !is_excluded(&raw, &info.process_path, &cfg.excluded_apps)
+            && !autostart_set.contains(&raw_lower)
+            && !is_system_noise(&raw_lower)
+        {
+            let is_edge = raw_lower.contains("msedge");
+            let is_private = is_edge && info.title.contains("InPrivate");
+            // 隐私模式默认不记录
+            if !(is_private && !cfg.record_private) {
+                let mut ev = build_event(ts, &info.process_path, &info.title, idle);
+                ev.app_name = crate::friendly::friendly_name(&raw);
+                ev.is_private = is_private;
+                if is_edge {
+                    ev.edge_url = crate::edge::edge_url(info.hwnd);
+                    ev.page_title = crate::parse::parse_edge_title(&info.title);
+                }
+                if let Some(done) = sb.on_activity(&ev) {
+                    buffer.push(done);
+                }
+            }
+        }
+    }
+    // 媒体只在"真正在看"时计入（视频播放时长精确到前台+播放）
+    if watching {
+        if let Some(m) = media {
+            sb.on_media(&crate::model::MediaEvent {
+                ts,
+                media_title: m.title,
+                media_player: m.player,
+                media_status: m.status,
+                position_sec: m.position_sec,
+                duration_sec: m.duration_sec,
+            });
+        }
+    }
+    sb.touch(ts);
+}
+
+/// 落库会话；失败只记日志并保留 buffer 下轮重试（绝不让采集线程因偶发 DB 错误而退出）。
+#[cfg(windows)]
+fn flush_buffer(storage: &mut crate::storage::Storage, buffer: &mut Vec<crate::model::Session>) {
+    if buffer.is_empty() {
+        return;
+    }
+    match storage.insert_sessions(buffer) {
+        Ok(()) => buffer.clear(),
+        Err(e) => {
+            log::warn!("写入会话失败(下轮重试): {e}");
+            if buffer.len() > 5000 {
+                buffer.clear(); // 兜底：避免异常持续导致无限增长
+            }
+        }
+    }
+}
+
 /// 轮询采集循环：跑 `seconds` 秒后收尾退出（供托盘/CLI 调用）。
 #[cfg(windows)]
 pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Result<(), String> {
     use crate::model::Session;
     use crate::session::SessionBuilder;
     use crate::storage::Storage;
-    use crate::platform;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     let mut storage = Storage::open(db_path)?;
@@ -72,75 +155,17 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
     let threshold_ms = cfg.idle_threshold_sec.saturating_mul(1000).min(u32::MAX as u64) as u32;
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let mut last_flush = Instant::now();
-    let now_unix = || {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
-    };
+    let now_unix = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
 
     loop {
         let ts = now_unix();
-        let media = crate::media::media_snapshot();
-        let fg = platform::foreground_snapshot();
-        let fg_is_edge = fg
-            .as_ref()
-            .map(|i| basename(&i.process_path).to_ascii_lowercase().contains("msedge"))
-            .unwrap_or(false);
-        let media_playing = matches!(
-            media.as_ref().map(|m| m.status),
-            Some(crate::model::PlaybackStatus::Playing)
-        );
-        // 真正在看视频 = 前台是 Edge 且视频在播放；后台放音乐或暂停都不算
-        let watching = fg_is_edge && media_playing;
-        // 只有"前台看视频"能抵消无键鼠输入的空闲判定
-        let idle = is_idle(platform::last_input_tick(), platform::now_tick(), threshold_ms) && !watching;
-
-        if let Some(info) = fg {
-            let raw = basename(&info.process_path);
-            let raw_lower = raw.to_ascii_lowercase();
-            // 排除用户配置的应用 + 开机自启程序（那些是工具，无记录意义）
-            if !is_excluded(&raw, &info.process_path, &cfg.excluded_apps)
-                && !autostart_set.contains(&raw_lower)
-                && !is_system_noise(&raw_lower)
-            {
-                let is_edge = raw_lower.contains("msedge");
-                let is_private = is_edge && info.title.contains("InPrivate");
-                // 隐私模式默认不记录
-                if !(is_private && !cfg.record_private) {
-                    let mut ev = build_event(ts, &info.process_path, &info.title, idle);
-                    ev.app_name = crate::friendly::friendly_name(&raw);
-                    ev.is_private = is_private;
-                    if is_edge {
-                        ev.edge_url = crate::edge::edge_url(info.hwnd);
-                        ev.page_title = crate::parse::parse_edge_title(&info.title);
-                    }
-                    if let Some(done) = sb.on_activity(&ev) {
-                        buffer.push(done);
-                    }
-                }
-            }
-        }
-        // 媒体只在"真正在看"时计入（视频播放时长精确到前台+播放）
-        if watching {
-            if let Some(m) = media {
-                sb.on_media(&crate::model::MediaEvent {
-                    ts,
-                    media_title: m.title,
-                    media_player: m.player,
-                    media_status: m.status,
-                    position_sec: m.position_sec,
-                    duration_sec: m.duration_sec,
-                });
-            }
-        }
-        sb.touch(ts);
-        storage.set_heartbeat(ts)?;
+        collect_once(cfg, &autostart_set, threshold_ms, ts, &mut sb, &mut buffer);
+        let _ = storage.set_heartbeat(ts);
 
         if buffer.len() >= cfg.flush_max_events
             || last_flush.elapsed() >= Duration::from_secs(cfg.flush_interval_sec.max(1))
         {
-            if !buffer.is_empty() {
-                storage.insert_sessions(&buffer)?;
-                buffer.clear();
-            }
+            flush_buffer(&mut storage, &mut buffer);
             last_flush = Instant::now();
         }
 
@@ -153,9 +178,7 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
     if let Some(done) = sb.finish(now_unix()) {
         buffer.push(done);
     }
-    if !buffer.is_empty() {
-        storage.insert_sessions(&buffer)?;
-    }
+    flush_buffer(&mut storage, &mut buffer);
     Ok(())
 }
 
@@ -189,13 +212,12 @@ pub fn run_daemon(
     ctrl: std::sync::Arc<Control>,
 ) -> Result<(), String> {
     use crate::model::Session;
-    use crate::platform;
     use crate::session::SessionBuilder;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     let mut storage = crate::storage::Storage::open(db_path)?;
-    storage.recover_phantom(cfg.poll_interval_sec as i64 * 3)?;
+    let _ = storage.recover_phantom(cfg.poll_interval_sec as i64 * 6);
     let autostart_set = crate::autostart::autostart_exes();
 
     let mut sb = SessionBuilder::new();
@@ -203,7 +225,9 @@ pub fn run_daemon(
     let poll = Duration::from_secs(cfg.poll_interval_sec.max(1));
     let threshold_ms = cfg.idle_threshold_sec.saturating_mul(1000).min(u32::MAX as u64) as u32;
     let mut last_flush = Instant::now();
+    let mut last_heartbeat = Instant::now();
     let now_unix = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let _ = storage.set_heartbeat(now_unix());
 
     while !ctrl.stop.load(Ordering::Relaxed) {
         let ts = now_unix();
@@ -211,71 +235,22 @@ pub fn run_daemon(
             if let Some(done) = sb.finish(ts) {
                 buffer.push(done);
             }
-            if !buffer.is_empty() {
-                storage.insert_sessions(&buffer)?;
-                buffer.clear();
-            }
+            flush_buffer(&mut storage, &mut buffer);
             std::thread::sleep(poll);
             continue;
         }
-        let media = crate::media::media_snapshot();
-        let fg = platform::foreground_snapshot();
-        let fg_is_edge = fg
-            .as_ref()
-            .map(|i| basename(&i.process_path).to_ascii_lowercase().contains("msedge"))
-            .unwrap_or(false);
-        let media_playing = matches!(
-            media.as_ref().map(|m| m.status),
-            Some(crate::model::PlaybackStatus::Playing)
-        );
-        let watching = fg_is_edge && media_playing;
-        let idle = is_idle(platform::last_input_tick(), platform::now_tick(), threshold_ms) && !watching;
+        collect_once(cfg, &autostart_set, threshold_ms, ts, &mut sb, &mut buffer);
 
-        if let Some(info) = fg {
-            let raw = basename(&info.process_path);
-            let raw_lower = raw.to_ascii_lowercase();
-            if !is_excluded(&raw, &info.process_path, &cfg.excluded_apps)
-                && !autostart_set.contains(&raw_lower)
-                && !is_system_noise(&raw_lower)
-            {
-                let is_edge = raw_lower.contains("msedge");
-                let is_private = is_edge && info.title.contains("InPrivate");
-                if !(is_private && !cfg.record_private) {
-                    let mut ev = build_event(ts, &info.process_path, &info.title, idle);
-                    ev.app_name = crate::friendly::friendly_name(&raw);
-                    ev.is_private = is_private;
-                    if is_edge {
-                        ev.edge_url = crate::edge::edge_url(info.hwnd);
-                        ev.page_title = crate::parse::parse_edge_title(&info.title);
-                    }
-                    if let Some(done) = sb.on_activity(&ev) {
-                        buffer.push(done);
-                    }
-                }
-            }
+        // 心跳每 ~30s 写一次即可（仅用于崩溃残留兜底），不必每轮写盘。
+        if last_heartbeat.elapsed() >= Duration::from_secs(30) {
+            let _ = storage.set_heartbeat(ts);
+            last_heartbeat = Instant::now();
         }
-        if watching {
-            if let Some(m) = media {
-                sb.on_media(&crate::model::MediaEvent {
-                    ts,
-                    media_title: m.title,
-                    media_player: m.player,
-                    media_status: m.status,
-                    position_sec: m.position_sec,
-                    duration_sec: m.duration_sec,
-                });
-            }
-        }
-        sb.touch(ts);
-        storage.set_heartbeat(ts)?;
 
         if buffer.len() >= cfg.flush_max_events
             || last_flush.elapsed() >= Duration::from_secs(cfg.flush_interval_sec.max(1))
         {
-            if !buffer.is_empty() {
-                storage.insert_sessions(&buffer)?;
-                buffer.clear();
-            }
+            flush_buffer(&mut storage, &mut buffer);
             last_flush = Instant::now();
         }
         std::thread::sleep(poll);
@@ -284,9 +259,7 @@ pub fn run_daemon(
     if let Some(done) = sb.finish(now_unix()) {
         buffer.push(done);
     }
-    if !buffer.is_empty() {
-        storage.insert_sessions(&buffer)?;
-    }
+    flush_buffer(&mut storage, &mut buffer);
     Ok(())
 }
 
