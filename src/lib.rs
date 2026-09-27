@@ -1,6 +1,8 @@
 pub mod aggregate;
 pub mod collector;
 pub mod config;
+#[cfg(windows)]
+pub mod edge;
 pub mod logging;
 pub mod model;
 pub mod parse;

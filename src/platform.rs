@@ -16,6 +16,7 @@ pub struct ForegroundInfo {
     pub title: String,
     pub process_path: String,
     pub pid: u32,
+    pub hwnd: isize,
 }
 
 /// 系统开机以来的毫秒 tick（会每 ~49 天回绕）。
@@ -70,6 +71,7 @@ pub fn foreground_snapshot() -> Option<ForegroundInfo> {
             title,
             process_path,
             pid,
+            hwnd: hwnd.0 as isize,
         })
     }
 }

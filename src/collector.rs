@@ -63,9 +63,19 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
         if let Some(info) = platform::foreground_snapshot() {
             let app = basename(&info.process_path);
             if !is_excluded(&app, &info.process_path, &cfg.excluded_apps) {
-                let ev = build_event(ts, &info.process_path, &info.title, idle);
-                if let Some(done) = sb.on_activity(&ev) {
-                    buffer.push(done);
+                let is_edge = app.to_ascii_lowercase().contains("msedge");
+                let is_private = is_edge && info.title.contains("InPrivate");
+                // 隐私模式默认不记录
+                if !(is_private && !cfg.record_private) {
+                    let mut ev = build_event(ts, &info.process_path, &info.title, idle);
+                    ev.is_private = is_private;
+                    if is_edge {
+                        ev.edge_url = crate::edge::edge_url(info.hwnd);
+                        ev.page_title = crate::parse::parse_edge_title(&info.title);
+                    }
+                    if let Some(done) = sb.on_activity(&ev) {
+                        buffer.push(done);
+                    }
                 }
             }
         }
