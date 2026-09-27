@@ -1,5 +1,7 @@
 //! Slint 仪表盘窗口（Bento Box 风格）。UI 定义在 ui/dashboard.slint，由 build.rs 编译。
 use crate::{aggregate, storage::Storage};
+use slint::ComponentHandle;
+use slint::winit_030::WinitWindowAccessor;
 use std::rc::Rc;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -95,6 +97,30 @@ fn app_icon_image() -> slint::Image {
 pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
     let ui = Dashboard::new().map_err(|e| e.to_string())?;
     refresh_dashboard(&ui, db_path)?;
+
+    // 无边框窗口：自定义关闭按钮 → 隐藏(保活, 再开不再白屏)；标题栏拖动 → 移动窗口
+    let w1 = ui.as_weak();
+    ui.on_close_clicked(move || {
+        if let Some(u) = w1.upgrade() {
+            let _ = u.hide();
+        }
+    });
+    let w2 = ui.as_weak();
+    ui.on_drag_moved(move |dx, dy| {
+        if let Some(u) = w2.upgrade() {
+            u.window().with_winit_window(|win| {
+                if let Ok(pos) = win.outer_position() {
+                    let sf = win.scale_factor() as f32;
+                    win.set_outer_position(slint::winit_030::winit::dpi::PhysicalPosition::new(
+                        pos.x + (dx * sf).round() as i32,
+                        pos.y + (dy * sf).round() as i32,
+                    ));
+                }
+            });
+        }
+    });
+    ui.window()
+        .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
     Ok(ui)
 }
 
