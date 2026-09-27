@@ -114,7 +114,10 @@ fn main() {
             if let Some(dir) = std::path::Path::new(&db).parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            activity_tracker::tray::run_tray(cfg, db).expect("tray");
+            if let Err(e) = activity_tracker::tray::run_tray(cfg, db) {
+                log::error!("托盘启动失败: {e}");
+                eprintln!("托盘启动失败: {e}");
+            }
         }
         _ => {
             println!("用法: (无参=托盘常驻) | collect <db> <秒> | ui <db> | dump <db> <日期> | report <db> <日期> | summarize <db> <日期> | replay <jsonl> <db>");

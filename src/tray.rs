@@ -3,6 +3,7 @@
 
 use crate::collector::Control;
 use crate::config::Config;
+use slint::winit_030::WinitWindowAccessor;
 use slint::ComponentHandle;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -36,6 +37,36 @@ fn make_icon() -> Option<Icon> {
         }
     }
     Icon::from_rgba(rgba, size, size).ok()
+}
+
+fn winit_icon() -> Option<slint::winit_030::winit::window::Icon> {
+    let (w, h, rgba) = crate::assets::logo_rgba(64)?;
+    slint::winit_030::winit::window::Icon::from_rgba(rgba, w, h).ok()
+}
+
+/// 打开/刷新仪表盘窗口，并设置任务栏图标（winit 层，修复默认图标）。
+fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &str) {
+    {
+        let mut wb = win.borrow_mut();
+        if let Some(d) = wb.as_ref() {
+            let _ = crate::ui::refresh_dashboard(d, db);
+        } else {
+            match crate::ui::build_dashboard(db) {
+                Ok(d) => *wb = Some(d),
+                Err(e) => {
+                    log::error!("打开仪表盘失败: {e}");
+                    return;
+                }
+            }
+        }
+    }
+    if let Some(d) = win.borrow().as_ref() {
+        let _ = d.show();
+        d.window().with_winit_window(|w| {
+            use slint::winit_030::winit::platform::windows::WindowExtWindows;
+            w.set_taskbar_icon(winit_icon());
+        });
+    }
 }
 
 /// 启动托盘 + 后台采集，进入事件循环（阻塞至退出）。
@@ -78,16 +109,7 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
             }
             mv2.set(false);
             match which {
-                0 => {
-                    let mut wb = win2.borrow_mut();
-                    if let Some(d) = wb.as_ref() {
-                        let _ = crate::ui::refresh_dashboard(d, &db2);
-                        let _ = d.show();
-                    } else if let Ok(d) = crate::ui::build_dashboard(&db2) {
-                        let _ = d.show();
-                        *wb = Some(d);
-                    }
-                }
+                0 => open_dashboard(&win2, &db2),
                 1 => {
                     let p = !c2.paused.load(Ordering::Relaxed);
                     c2.paused.store(p, Ordering::Relaxed);
@@ -139,9 +161,12 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
             let ph = (162.0 * scale) as i32;
             let mx = (pt.x - pw).max(4);
             let my = (pt.y - ph).max(4);
-            menu.window()
-                .set_position(slint::PhysicalPosition::new(mx, my));
             let _ = menu.show();
+            menu.window().with_winit_window(|w| {
+                use slint::winit_030::winit::platform::windows::WindowExtWindows;
+                w.set_skip_taskbar(true);
+                w.set_outer_position(slint::winit_030::winit::dpi::PhysicalPosition::new(mx, my));
+            });
             mv.set(true);
             menu_hwnd.set(None);
         }
