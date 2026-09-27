@@ -32,9 +32,9 @@ export component Dashboard inherits Window {
         spacing: 16px;
 
         HorizontalLayout {
-            spacing: 10px;
-            Image { width: 30px; height: 30px; source: app_icon; image-fit: contain; }
-            Text { text: "今天用啥 · " + date; font-size: 22px; font-weight: 700; color: #1D1D1F; vertical-alignment: center; }
+            spacing: 12px;
+            Image { width: 72px; height: 72px; source: app_icon; image-fit: contain; image-rendering: smooth; }
+            Text { text: "今天用啥 · " + date; font-size: 24px; font-weight: 700; color: #1D1D1F; vertical-alignment: center; }
         }
 
         HorizontalLayout {
@@ -126,6 +126,86 @@ export component Dashboard inherits Window {
                 spacing: 6px;
                 Text { text: "AI 总结"; color: #0E7490; font-size: 13px; font-weight: 600; }
                 Text { text: summary; color: #123C44; font-size: 13px; wrap: word-wrap; }
+            }
+        }
+    }
+}
+
+component MenuRow inherits Rectangle {
+    callback clicked();
+    in property <string> label;
+    in property <color> dot;
+    height: 34px;
+    border-radius: 9px;
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+    background: ta.has-hover ? #EDEFF3 : transparent;
+    Rectangle {
+        x: 14px;
+        y: root.height / 2 - 4px;
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: root.dot;
+    }
+    Text {
+        x: 34px;
+        width: root.width - 46px;
+        height: root.height;
+        text: root.label;
+        color: #1D1D1F;
+        font-size: 14px;
+        vertical-alignment: center;
+    }
+}
+
+export component TrayMenu inherits Window {
+    callback act(int);
+    in property <string> toggle_text: "暂停记录";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 160px;
+    height: 162px;
+    Rectangle {
+        background: #FFFFFF;
+        border-radius: 14px;
+        drop-shadow-blur: 22px;
+        drop-shadow-color: #00000033;
+        drop-shadow-offset-y: 6px;
+        VerticalLayout {
+            padding: 8px;
+            spacing: 2px;
+            MenuRow {
+                label: "查看今日统计";
+                dot: #2563EB;
+                clicked => {
+                    root.act(0);
+                }
+            }
+            MenuRow {
+                label: root.toggle_text;
+                dot: #16A34A;
+                clicked => {
+                    root.act(1);
+                }
+            }
+            MenuRow {
+                label: "立即生成总结";
+                dot: #7C3AED;
+                clicked => {
+                    root.act(2);
+                }
+            }
+            MenuRow {
+                label: "退出";
+                dot: #EF4444;
+                clicked => {
+                    root.act(3);
+                }
             }
         }
     }

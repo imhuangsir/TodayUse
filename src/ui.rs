@@ -27,7 +27,7 @@ fn rows(buckets: &[aggregate::Bucket], n: usize) -> Vec<slint::SharedString> {
 }
 
 /// 构建并填充仪表盘窗口（不阻塞；调用方负责 show/run 并保持其存活）。
-pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
+pub fn refresh_dashboard(ui: &Dashboard, db_path: &str) -> Result<(), String> {
     let off = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     let now = OffsetDateTime::now_utc().to_offset(off);
     let (y, m, d) = (now.year(), u8::from(now.month()), now.day());
@@ -35,12 +35,7 @@ pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
     let st = Storage::open(db_path)?;
     let sessions = st.sessions_in_range(start, end)?;
 
-    let ui = Dashboard::new().map_err(|e| e.to_string())?;
-    if let Some((w, h, rgba)) = crate::assets::logo_rgba(64) {
-        let mut pb = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
-        pb.make_mut_bytes().copy_from_slice(&rgba);
-        ui.set_app_icon(slint::Image::from_rgba8(pb));
-    }
+    ui.set_app_icon(app_icon_image());
     ui.set_date(format!("{y:04}-{m:02}-{d:02}").into());
     ui.set_active(fmt_dur(aggregate::total_active_sec(&sessions)).into());
     ui.set_idle(fmt_dur(aggregate::total_idle_sec(&sessions)).into());
@@ -83,6 +78,23 @@ pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
     ui.set_sites(Rc::new(slint::VecModel::from(rows(&aggregate::domain_durations(&sessions), 6))).into());
     ui.set_videos(Rc::new(slint::VecModel::from(rows(&aggregate::top_videos(&sessions), 6))).into());
     ui.set_summary("（未生成：配置 AI 或点『立即生成总结』后显示）".into());
+    Ok(())
+}
+
+fn app_icon_image() -> slint::Image {
+    if let Some((w, h, rgba)) = crate::assets::logo_rgba(144) {
+        let mut pb = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+        pb.make_mut_bytes().copy_from_slice(&rgba);
+        slint::Image::from_rgba8(pb)
+    } else {
+        slint::Image::default()
+    }
+}
+
+/// 新建并填充仪表盘窗口。
+pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
+    let ui = Dashboard::new().map_err(|e| e.to_string())?;
+    refresh_dashboard(&ui, db_path)?;
     Ok(ui)
 }
 

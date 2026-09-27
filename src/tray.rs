@@ -1,16 +1,18 @@
-//! 系统托盘 + 后台常驻采集。托盘菜单：暂停/恢复、查看统计、立即总结、退出。
+//! 系统托盘 + 后台常驻采集。右键弹出便当盒风格自绘菜单（非系统原生菜单）。
 #![cfg(windows)]
 
 use crate::collector::Control;
 use crate::config::Config;
-use std::cell::RefCell;
+use slint::ComponentHandle;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use slint::ComponentHandle;
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIconBuilder};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use windows::Win32::Foundation::POINT;
+use windows::Win32::UI::HiDpi::GetDpiForSystem;
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetForegroundWindow};
 
 fn make_icon() -> Option<Icon> {
     if let Some((w, h, rgba)) = crate::assets::logo_rgba(32) {
@@ -18,7 +20,6 @@ fn make_icon() -> Option<Icon> {
             return Some(icon);
         }
     }
-    // 回退：蓝色圆点
     let size = 32u32;
     let mut rgba = vec![0u8; (size * size * 4) as usize];
     let (cx, cy, r) = (16.0f32, 16.0f32, 14.0f32);
@@ -49,62 +50,115 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
         });
     }
 
-    let menu = Menu::new();
-    let mi_show = MenuItem::new("查看今日统计", true, None);
-    let mi_toggle = MenuItem::new("暂停记录", true, None);
-    let mi_sum = MenuItem::new("立即生成总结", true, None);
-    let mi_quit = MenuItem::new("退出", true, None);
-    let sep = PredefinedMenuItem::separator();
-    for it in [
-        &mi_show as &dyn tray_icon::menu::IsMenuItem,
-        &mi_toggle,
-        &sep,
-        &mi_sum,
-        &mi_quit,
-    ] {
-        menu.append(it).map_err(|e| e.to_string())?;
-    }
-
-    let mut builder = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip("今天用啥");
+    let mut builder = TrayIconBuilder::new().with_tooltip("今天用啥");
     if let Some(icon) = make_icon() {
         builder = builder.with_icon(icon);
     }
     let _tray = builder.build().map_err(|e| e.to_string())?;
 
-    let (id_show, id_toggle, id_sum, id_quit) = (
-        mi_show.id().clone(),
-        mi_toggle.id().clone(),
-        mi_sum.id().clone(),
-        mi_quit.id().clone(),
-    );
+    let menu: Rc<RefCell<Option<crate::ui::TrayMenu>>> = Rc::new(RefCell::new(None));
     let win: Rc<RefCell<Option<crate::ui::Dashboard>>> = Rc::new(RefCell::new(None));
-    let menu_rx = MenuEvent::receiver();
+    let menu_hwnd: Rc<Cell<Option<isize>>> = Rc::new(Cell::new(None));
+    let close_req = Rc::new(Cell::new(false));
+    let tray_rx = TrayIconEvent::receiver();
     let timer = slint::Timer::default();
-    let ctrl_t = ctrl.clone();
-    let db_t = db_path.clone();
-    let cfg_t = cfg.clone();
+    let ctrl_c = ctrl.clone();
+    let cfg_c = cfg.clone();
+    let db_c = db_path.clone();
 
-    timer.start(slint::TimerMode::Repeated, Duration::from_millis(150), move || {
-        while let Ok(ev) = menu_rx.try_recv() {
-            if ev.id == id_quit {
-                ctrl_t.stop.store(true, Ordering::Relaxed);
-                let _ = slint::quit_event_loop();
-            } else if ev.id == id_toggle {
-                let paused = !ctrl_t.paused.load(Ordering::Relaxed);
-                ctrl_t.paused.store(paused, Ordering::Relaxed);
-                mi_toggle.set_text(if paused { "恢复记录" } else { "暂停记录" });
-            } else if ev.id == id_show {
-                match crate::ui::build_dashboard(&db_t) {
-                    Ok(d) => {
-                        let _ = d.show();
-                        *win.borrow_mut() = Some(d);
-                    }
-                    Err(e) => eprintln!("打开窗口失败: {e}"),
+    timer.start(slint::TimerMode::Repeated, Duration::from_millis(120), move || {
+        // __TIMER_BODY__
+        while let Ok(ev) = tray_rx.try_recv() {
+            let right_up = matches!(
+                ev,
+                TrayIconEvent::Click {
+                    button: MouseButton::Right,
+                    button_state: MouseButtonState::Up,
+                    ..
                 }
-            } else if ev.id == id_sum {
-                spawn_summary(cfg_t.clone(), db_t.clone());
+            );
+            if !right_up {
+                continue;
+            }
+            *menu.borrow_mut() = None;
+            menu_hwnd.set(None);
+            close_req.set(false);
+            let Ok(m) = crate::ui::TrayMenu::new() else { continue };
+            m.set_toggle_text(
+                if ctrl_c.paused.load(Ordering::Relaxed) {
+                    "恢复记录"
+                } else {
+                    "暂停记录"
+                }
+                .into(),
+            );
+            let mut pt = POINT::default();
+            unsafe {
+                let _ = GetCursorPos(&mut pt);
+            }
+            // 按系统 DPI 换算菜单物理尺寸，开在光标左上方（托盘在右下角），贴边保护
+            let scale = (unsafe { GetDpiForSystem() } as f32 / 96.0).max(1.0);
+            let pw = (160.0 * scale) as i32;
+            let ph = (162.0 * scale) as i32;
+            let mx = (pt.x - pw).max(4);
+            let my = (pt.y - ph).max(4);
+            m.window().set_position(slint::PhysicalPosition::new(mx, my));
+            let weak = m.as_weak();
+            let (c2, db2, cfg2, win2, close2) = (
+                ctrl_c.clone(),
+                db_c.clone(),
+                cfg_c.clone(),
+                win.clone(),
+                close_req.clone(),
+            );
+            m.on_act(move |which| {
+                match which {
+                    0 => {
+                        let mut wb = win2.borrow_mut();
+                        if let Some(d) = wb.as_ref() {
+                            let _ = crate::ui::refresh_dashboard(d, &db2);
+                            let _ = d.show();
+                        } else if let Ok(d) = crate::ui::build_dashboard(&db2) {
+                            let _ = d.show();
+                            *wb = Some(d);
+                        }
+                    }
+                    1 => {
+                        let p = !c2.paused.load(Ordering::Relaxed);
+                        c2.paused.store(p, Ordering::Relaxed);
+                    }
+                    2 => spawn_summary(cfg2.clone(), db2.clone()),
+                    3 => {
+                        c2.stop.store(true, Ordering::Relaxed);
+                        let _ = slint::quit_event_loop();
+                    }
+                    _ => {}
+                }
+                if let Some(mm) = weak.upgrade() {
+                    let _ = mm.hide();
+                }
+                close2.set(true);
+            });
+            let _ = m.show();
+            *menu.borrow_mut() = Some(m);
+        }
+
+        if menu.borrow().is_some() {
+            if close_req.get() {
+                *menu.borrow_mut() = None;
+                menu_hwnd.set(None);
+                close_req.set(false);
+            } else {
+                let fg = unsafe { GetForegroundWindow() }.0 as isize;
+                match menu_hwnd.get() {
+                    None => menu_hwnd.set(Some(fg)),
+                    Some(h) => {
+                        if fg != h {
+                            *menu.borrow_mut() = None;
+                            menu_hwnd.set(None);
+                        }
+                    }
+                }
             }
         }
     });
@@ -131,7 +185,9 @@ fn spawn_summary(cfg: Config, db: String) {
                 )
             });
         let Some(key) = key else { return };
-        let Ok(mut st) = crate::storage::Storage::open(&db) else { return };
+        let Ok(mut st) = crate::storage::Storage::open(&db) else {
+            return;
+        };
         let off = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
         let now = time::OffsetDateTime::now_utc().to_offset(off);
         let _ = crate::summarize::generate_for_day(

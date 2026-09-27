@@ -13,12 +13,13 @@ log = "0.4"
 simplelog = "0.12"
 ureq = "2"
 slint = "1.8"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_SystemInformation",
@@ -37,6 +38,8 @@ tray-icon = "0.19"
 
 [build-dependencies]
 slint-build = "1.8"
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
+winresource = "0.1"
 
 [profile.release]
 opt-level = "z"
