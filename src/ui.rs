@@ -21,24 +21,55 @@ fn fmt_dur(sec: i64) -> String {
 }
 
 fn rows(buckets: &[aggregate::Bucket], n: usize) -> Vec<slint::SharedString> {
-    buckets
+    let mut v: Vec<slint::SharedString> = buckets
         .iter()
         .take(n)
         .map(|b| slint::SharedString::from(format!("{}  ·  {}", b.name, fmt_dur(b.seconds))))
-        .collect()
+        .collect();
+    // 补空行到固定 n 行：有无数据时卡片外观一致
+    while v.len() < n {
+        v.push(slint::SharedString::from(""));
+    }
+    v
 }
 
-/// 构建并填充仪表盘窗口（不阻塞；调用方负责 show/run 并保持其存活）。
-pub fn refresh_dashboard(ui: &Dashboard, db_path: &str) -> Result<(), String> {
-    let off = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    let now = OffsetDateTime::now_utc().to_offset(off);
-    let (y, m, d) = (now.year(), u8::from(now.month()), now.day());
-    let (start, end) = aggregate::local_day_bounds(y, m, d, off);
+thread_local! {
+    // 进程路径 -> 图标缓存：切换视图/重复刷新不再每次调 Win32 抽图标（让切换丝滑）。
+    static ICON_CACHE: std::cell::RefCell<std::collections::HashMap<String, slint::Image>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn cached_icon(process_path: &str) -> slint::Image {
+    ICON_CACHE.with(|c| {
+        if let Some(img) = c.borrow().get(process_path) {
+            return img.clone();
+        }
+        let img = crate::icon::app_icon_rgba(process_path)
+            .map(|(w, h, rgba)| {
+                let mut pb = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+                pb.make_mut_bytes().copy_from_slice(&rgba);
+                slint::Image::from_rgba8(pb)
+            })
+            .unwrap_or_default();
+        c.borrow_mut().insert(process_path.to_string(), img.clone());
+        img
+    })
+}
+
+/// 核心填充：按 [start,end) 聚合并填入所有卡片。today 决定 AI 卡的占位文案。
+fn fill_range(
+    ui: &Dashboard,
+    db_path: &str,
+    start: i64,
+    end: i64,
+    label: String,
+    today: bool,
+) -> Result<(), String> {
     let st = Storage::open(db_path)?;
     let sessions = st.sessions_in_range(start, end)?;
 
     ui.set_app_icon(app_icon_image());
-    ui.set_date(format!("{y:04}-{m:02}-{d:02}").into());
+    ui.set_date(label.into());
     ui.set_active(fmt_dur(aggregate::total_active_sec(&sessions)).into());
     ui.set_idle(fmt_dur(aggregate::total_idle_sec(&sessions)).into());
     let apps = aggregate::app_durations(&sessions);
@@ -52,8 +83,10 @@ pub fn refresh_dashboard(ui: &Dashboard, db_path: &str) -> Result<(), String> {
             .or_insert_with(|| s.process_path.clone());
     }
 
-    let top: Vec<&aggregate::Bucket> = apps.iter().take(8).collect();
-    let appbars: Vec<AppBar> = top
+    // 固定 5 行应用（不足补空行），保证今日/各时间段的卡片高度一致、窗口不变形。
+    const APP_ROWS: usize = 5;
+    let top: Vec<&aggregate::Bucket> = apps.iter().take(APP_ROWS).collect();
+    let mut appbars: Vec<AppBar> = top
         .iter()
         .map(|b| AppBar {
             name: b.name.clone().into(),
@@ -61,29 +94,51 @@ pub fn refresh_dashboard(ui: &Dashboard, db_path: &str) -> Result<(), String> {
             frac: b.seconds as f32 / max as f32,
         })
         .collect();
-    let icons: Vec<slint::Image> = top
+    let mut icons: Vec<slint::Image> = top
         .iter()
-        .map(|b| {
-            path_of
-                .get(&b.name)
-                .and_then(|p| crate::icon::app_icon_rgba(p))
-                .map(|(w, h, rgba)| {
-                    let mut pb = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
-                    pb.make_mut_bytes().copy_from_slice(&rgba);
-                    slint::Image::from_rgba8(pb)
-                })
-                .unwrap_or_default()
-        })
+        .map(|b| path_of.get(&b.name).map(|p| cached_icon(p)).unwrap_or_default())
         .collect();
+    while appbars.len() < APP_ROWS {
+        appbars.push(AppBar { name: "".into(), dur: "".into(), frac: 0.0 });
+        icons.push(slint::Image::default());
+    }
     ui.set_appbars(Rc::new(slint::VecModel::from(appbars)).into());
     ui.set_icons(Rc::new(slint::VecModel::from(icons)).into());
-    ui.set_sites(Rc::new(slint::VecModel::from(rows(&aggregate::domain_durations(&sessions), 6))).into());
-    ui.set_videos(Rc::new(slint::VecModel::from(rows(&aggregate::top_videos(&sessions), 6))).into());
-    let summary = st
-        .latest_summary(start, end)?
-        .unwrap_or_else(|| "（未生成：配置 AI 后，点托盘『立即生成总结』，再重开本窗口即可显示）".to_string());
+    ui.set_sites(Rc::new(slint::VecModel::from(rows(&aggregate::domain_durations(&sessions), 5))).into());
+    ui.set_videos(Rc::new(slint::VecModel::from(rows(&aggregate::top_videos(&sessions), 5))).into());
+    let summary = st.latest_summary(start, end)?.unwrap_or_else(|| {
+        if today {
+            "（暂无 AI 总结；配置 AI 后打开本窗口、当日数据有更新时会自动生成）".to_string()
+        } else {
+            "（历史 / 累计视图不自动生成 AI 总结）".to_string()
+        }
+    });
     ui.set_summary(summary.into());
     Ok(())
+}
+
+/// 今日视图（默认）。
+pub fn refresh_dashboard(ui: &Dashboard, db_path: &str) -> Result<(), String> {
+    let off = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let now = OffsetDateTime::now_utc().to_offset(off);
+    let (y, m, d) = (now.year(), u8::from(now.month()), now.day());
+    let (start, end) = aggregate::local_day_bounds(y, m, d, off);
+    ui.set_history_mode(false);
+    ui.set_active_range(0);
+    fill_range(ui, db_path, start, end, format!("今天用啥 · {y:04}-{m:02}-{d:02}"), true)
+}
+
+/// 历史 / 累计视图：按预设范围 n（1=近7天，2=近30天，3=全部）刷新。
+pub fn refresh_range_preset(ui: &Dashboard, db_path: &str, n: i32) -> Result<(), String> {
+    let now_ts = OffsetDateTime::now_utc().unix_timestamp();
+    let (start, label) = match n {
+        1 => (now_ts - 7 * 86400, "近 7 天"),
+        2 => (now_ts - 30 * 86400, "近 30 天"),
+        _ => (0i64, "累计 · 全部"),
+    };
+    ui.set_history_mode(true);
+    ui.set_active_range(n);
+    fill_range(ui, db_path, start, now_ts, label.to_string(), false)
 }
 
 fn app_icon_image() -> slint::Image {
@@ -122,6 +177,27 @@ pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
             if !got {
                 log::warn!("start-drag: 无 winit 窗口");
             }
+        }
+    });
+    // 时间范围切换（今日/近7天/近30天/全部）——内容淡出→换数据→淡入，掩饰刷新的瞬时卡顿。
+    let w4 = ui.as_weak();
+    let db4 = db_path.to_string();
+    ui.on_pick_range(move |n| {
+        if let Some(u) = w4.upgrade() {
+            u.set_active_range(n); // 立即高亮所选分段（响应快）
+            u.set_refreshing(true); // 内容淡出
+            let wk = u.as_weak();
+            let db = db4.clone();
+            slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+                if let Some(u) = wk.upgrade() {
+                    let _ = if n == 0 {
+                        refresh_dashboard(&u, &db)
+                    } else {
+                        refresh_range_preset(&u, &db, n)
+                    };
+                    u.set_refreshing(false); // 换好数据后淡入
+                }
+            });
         }
     });
     ui.window()
@@ -239,9 +315,11 @@ pub fn prewarm_hide(d: &Dashboard) {
 /// 把（预热过、当前隐藏在屏幕外的）窗口移回主屏幕居中并显示出来。
 pub fn show_centered(d: &Dashboard) {
     use slint::winit_030::winit::dpi::PhysicalPosition;
+    use slint::winit_030::winit::window::WindowLevel;
     d.window().with_winit_window(|w| {
         use slint::winit_030::winit::platform::windows::WindowExtWindows;
         w.set_skip_taskbar(false);
+        w.set_minimized(false);
         if let Some(mon) = w.primary_monitor() {
             let mp = mon.position();
             let ms = mon.size();
@@ -252,8 +330,20 @@ pub fn show_centered(d: &Dashboard) {
         }
     });
     let _ = d.show();
+    d.window().with_winit_window(|w| {
+        // 长时间挂后台后，后台进程抢前台常被系统限制，导致窗口"显示在别的窗口后面"（表现为没弹出）。
+        // 先临时置顶顶到最前，300ms 后再落回普通层级——可靠地把窗口带到最前。
+        w.set_window_level(WindowLevel::AlwaysOnTop);
+        w.focus_window();
+    });
     d.window().request_redraw();
-    d.window().with_winit_window(|w| w.focus_window());
+    let weak = d.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(300), move || {
+        if let Some(d) = weak.upgrade() {
+            d.window().with_winit_window(|w| w.set_window_level(WindowLevel::Normal));
+            d.window().request_redraw();
+        }
+    });
 }
 
 /// 诊断辅助：当前前台窗口标题（判断我们的窗口是否真的到了最前）。

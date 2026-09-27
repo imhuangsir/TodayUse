@@ -44,8 +44,8 @@ fn winit_icon() -> Option<slint::winit_030::winit::window::Icon> {
     slint::winit_030::winit::window::Icon::from_rgba(rgba, w, h).ok()
 }
 
-/// 打开/刷新仪表盘窗口，并设置任务栏图标（winit 层，修复默认图标）。
-fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &str) {
+/// 打开/刷新仪表盘窗口（今日视图），设任务栏图标，并在数据有变化时异步重生成 AI 总结。
+fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &str, cfg: &Config) {
     let mut wb = win.borrow_mut();
     if let Some(d) = wb.as_ref() {
         // 常规路径：窗口已在启动时预热建好，刷新数据后移回屏幕中央显示（秒显、可正常绘制）。
@@ -70,6 +70,8 @@ fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &s
             use slint::winit_030::winit::platform::windows::WindowExtWindows;
             w.set_taskbar_icon(winit_icon());
         });
+        // 打开即检查：今日数据自上次总结后有变化就异步重新生成，完成后回填卡片。
+        auto_generate_if_changed(d.as_weak(), db.to_string(), cfg.clone());
     }
 }
 
@@ -128,13 +130,8 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
             }
             mv2.set(false);
             match which {
-                0 => open_dashboard(&win2, &db2),
+                0 => open_dashboard(&win2, &db2, &cfg2),
                 1 => {
-                    let p = !c2.paused.load(Ordering::Relaxed);
-                    c2.paused.store(p, Ordering::Relaxed);
-                }
-                2 => spawn_summary(cfg2.clone(), db2.clone()),
-                3 => {
                     c2.stop.store(true, Ordering::Relaxed);
                     let _ = slint::quit_event_loop();
                 }
@@ -148,7 +145,6 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
     let timer = slint::Timer::default();
     let menu_hwnd: Cell<Option<isize>> = Cell::new(None);
     let mv = menu_visible.clone();
-    let ctrl_t = ctrl.clone();
 
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(120), move || {
         while let Ok(ev) = tray_rx.try_recv() {
@@ -163,21 +159,13 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
             if !right_up {
                 continue;
             }
-            menu.set_toggle_text(
-                if ctrl_t.paused.load(Ordering::Relaxed) {
-                    "恢复记录"
-                } else {
-                    "暂停记录"
-                }
-                .into(),
-            );
             let mut pt = POINT::default();
             unsafe {
                 let _ = GetCursorPos(&mut pt);
             }
             let scale = (unsafe { GetDpiForSystem() } as f32 / 96.0).max(1.0);
             let pw = (160.0 * scale) as i32;
-            let ph = (162.0 * scale) as i32;
+            let ph = (90.0 * scale) as i32;
             let mx = (pt.x - pw).max(4);
             let my = (pt.y - ph).max(4);
             let _ = menu.show();
@@ -210,36 +198,100 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
     Ok(())
 }
 
-fn spawn_summary(cfg: Config, db: String) {
-    std::thread::spawn(move || {
-        if !cfg.ai_enabled || cfg.ai_base_url.is_empty() {
-            return;
+static GENERATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 解析 API key：优先环境变量 AT_API_KEY，否则读加密的 key.bin。
+fn resolve_key() -> Option<String> {
+    std::env::var("AT_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let base = std::env::var("LOCALAPPDATA").ok()?;
+            crate::secret::load_key(
+                &std::path::PathBuf::from(base).join("ActivityTracker").join("key.bin"),
+            )
+        })
+}
+
+/// 在 UI 线程回填总结卡片（仅当仍在今日视图时，避免覆盖历史视图）。
+fn set_summary_ui(win_weak: &slint::Weak<crate::ui::Dashboard>, text: String) {
+    let weak = win_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(u) = weak.upgrade() {
+            if !u.get_history_mode() {
+                u.set_summary(text.into());
+            }
         }
-        let key = std::env::var("AT_API_KEY")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                let base = std::env::var("LOCALAPPDATA").ok()?;
-                crate::secret::load_key(
-                    &std::path::PathBuf::from(base)
-                        .join("ActivityTracker")
-                        .join("key.bin"),
-                )
-            });
-        let Some(key) = key else { return };
+    });
+}
+
+/// 今日数据自上次总结后有变化（或从未生成）就异步重新生成 AI 总结，完成后回填卡片。
+fn auto_generate_if_changed(win_weak: slint::Weak<crate::ui::Dashboard>, db: String, cfg: Config) {
+    if !cfg.ai_enabled || cfg.ai_base_url.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let Some(key) = resolve_key() else { return };
         let Ok(mut st) = crate::storage::Storage::open(&db) else {
             return;
         };
         let off = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
         let now = time::OffsetDateTime::now_utc().to_offset(off);
-        let _ = crate::summarize::generate_for_day(
-            &mut st,
-            &cfg,
-            &key,
-            now.year(),
-            u8::from(now.month()),
-            now.day(),
-            off,
-        );
+        let (y, m, d) = (now.year(), u8::from(now.month()), now.day());
+        let (start, end) = crate::aggregate::local_day_bounds(y, m, d, off);
+        let sessions = st.sessions_in_range(start, end).unwrap_or_default();
+        let date = format!("{y:04}-{m:02}-{d:02}");
+        let digest =
+            crate::summarize::desensitize(crate::summarize::build_digest(&date, &sessions), &cfg);
+        // 用脱敏后 digest 的哈希作为"数据签名"：一致且已有总结 → 跳过，不调接口。
+        let sig = {
+            use std::hash::{Hash, Hasher};
+            let json = serde_json::to_string(&digest).unwrap_or_default();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            json.hash(&mut h);
+            format!("{:x}", h.finish())
+        };
+        let sig_key = format!("sigday:{start}");
+        let unchanged = st.get_meta(&sig_key).ok().flatten().as_deref() == Some(sig.as_str());
+        let has_summary = st.latest_summary(start, end).ok().flatten().is_some();
+        if unchanged && has_summary {
+            return;
+        }
+        // 防并发：已有生成在跑就不重复
+        if GENERATING
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        set_summary_ui(&win_weak, "AI 总结生成中…".into());
+        // API 可能偶发报错（限流/网络）：最多重试 3 次、指数退避，尽量把总结跑出来。
+        let mut last_err = String::new();
+        let mut ok = false;
+        for attempt in 1..=3u32 {
+            match crate::summarize::generate_for_day(&mut st, &cfg, &key, y, m, d, off) {
+                Ok(text) => {
+                    let _ = st.set_meta(&sig_key, &sig);
+                    set_summary_ui(&win_weak, text);
+                    ok = true;
+                    break;
+                }
+                Err(e) => {
+                    last_err = e;
+                    log::warn!("AI 总结第 {attempt}/3 次失败: {last_err}");
+                    if attempt < 3 {
+                        set_summary_ui(
+                            &win_weak,
+                            format!("AI 总结生成中…（第 {attempt} 次失败，重试中）"),
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(3 * attempt as u64));
+                    }
+                }
+            }
+        }
+        if !ok {
+            set_summary_ui(&win_weak, format!("（AI 总结失败，已重试3次：{last_err}）"));
+        }
+        GENERATING.store(false, Ordering::Release);
     });
 }

@@ -1,10 +1,33 @@
-// Bento Box 风格仪表盘：每张卡片都有配色（中等饱和渐变），应用时长为柱状图。
+import { ScrollView } from "std-widgets.slint";
+
+// Bento Box 风格仪表盘：每张卡片纯色圆角，应用时长为柱状图。
 struct AppBar { name: string, dur: string, frac: float }
 
-// 软件渲染器下：纯色 + border-radius 才能可靠出圆角（渐变/阴影不被裁到圆角）。
+// 软件渲染器下：纯色 + border-radius 才能可靠出圆角（渐变/阴影不被裁到圆角）。clip 保证内容不撑大卡片。
 component Card inherits Rectangle {
     background: #FFFFFF;
     border-radius: 24px;
+    clip: true;
+}
+
+// 历史视图的时间范围选择小胶囊。
+component Chip inherits Rectangle {
+    callback clicked();
+    in property <string> label;
+    in property <bool> active;
+    height: 28px;
+    border-radius: 14px;
+    background: active ? #1D4ED8 : (ta.has-hover ? #E3E7EF : #FFFFFF);
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        Text { text: root.label; color: active ? #FFFFFF : #3A3A3F; font-size: 13px; vertical-alignment: center; }
+    }
 }
 
 export component Dashboard inherits Window {
@@ -17,16 +40,21 @@ export component Dashboard inherits Window {
     in property <[string]> videos;
     in property <string> summary;
     in property <image> app_icon;
+    in property <bool> history_mode;
+    in property <int> active_range;
+    in property <bool> refreshing;
     callback close-clicked();
     callback start-drag();
+    callback pick-range(int);
     title: "今天用啥";
     icon: app_icon;
     no-frame: true;
     background: transparent;
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 14px;
-    preferred-width: 980px;
-    preferred-height: 640px;
+    // 固定窗口尺寸：无论今日/近7天/近30天/全部，窗口与各卡片大小都不变（配合固定行数/柱数 + Card clip）。
+    width: 980px;
+    height: 700px;
 
     Rectangle {
         background: #EEEFF2;
@@ -46,9 +74,20 @@ export component Dashboard inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    spacing: 12px;
+                    spacing: 10px;
                     Image { width: 44px; height: 44px; source: app_icon; image-fit: contain; image-rendering: smooth; }
-                    Text { text: "今天用啥 · " + date; font-size: 24px; font-weight: 700; color: #1D1D1F; vertical-alignment: center; }
+                    Text { text: date; font-size: 22px; font-weight: 700; color: #1D1D1F; vertical-alignment: center; }
+                    // 时间范围分段（就在日期旁边；切换不改布局，只换数字→丝滑）。垂直居中于标题栏。
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Chip { label: "今日"; active: root.active_range == 0; clicked => { root.pick-range(0); } }
+                            Chip { label: "近7天"; active: root.active_range == 1; clicked => { root.pick-range(1); } }
+                            Chip { label: "近30天"; active: root.active_range == 2; clicked => { root.pick-range(2); } }
+                            Chip { label: "全部"; active: root.active_range == 3; clicked => { root.pick-range(3); } }
+                        }
+                    }
                     Rectangle { horizontal-stretch: 1; }
                     Rectangle {
                         width: 36px;
@@ -67,7 +106,9 @@ export component Dashboard inherits Window {
 
         HorizontalLayout {
             spacing: 16px;
-            vertical-stretch: 1;
+            vertical-stretch: 3;
+            opacity: root.refreshing ? 0.0 : 1.0;
+            animate opacity { duration: 160ms; easing: ease-in-out; }
             Card {
                 horizontal-stretch: 1;
                 background: #C4DBFF;
@@ -123,7 +164,9 @@ export component Dashboard inherits Window {
 
         HorizontalLayout {
             spacing: 16px;
-            vertical-stretch: 1;
+            vertical-stretch: 2;
+            opacity: root.refreshing ? 0.0 : 1.0;
+            animate opacity { duration: 160ms; easing: ease-in-out; }
             Card {
                 horizontal-stretch: 1;
                 background: #DFCDFB;
@@ -131,7 +174,11 @@ export component Dashboard inherits Window {
                     padding: 20px;
                     spacing: 6px;
                     Text { text: "Top 网站"; color: #6D28D9; font-size: 18px; font-weight: 700; }
-                    for s in sites : Text { text: s; color: #2E1A54; font-size: 14px; }
+                    // 固定 5 行（不足补空行），保证有无数据时卡片外观一致
+                    for s in sites : Rectangle {
+                        height: 22px;
+                        Text { width: 100%; text: s; color: #2E1A54; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                    }
                 }
             }
             Card {
@@ -141,19 +188,32 @@ export component Dashboard inherits Window {
                     padding: 20px;
                     spacing: 6px;
                     Text { text: "Top 视频"; color: #C2410C; font-size: 18px; font-weight: 700; }
-                    for v in videos : Text { text: v; color: #5A2A11; font-size: 14px; }
+                    for v in videos : Rectangle {
+                        height: 22px;
+                        Text { width: 100%; text: v; color: #5A2A11; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                    }
                 }
             }
         }
 
         Card {
-            height: 120px;
+            height: 110px;
             background: #CBE8EC;
+            opacity: root.refreshing ? 0.0 : 1.0;
+            animate opacity { duration: 160ms; easing: ease-in-out; }
             VerticalLayout {
                 padding: 18px;
                 spacing: 6px;
                 Text { text: "AI 总结"; color: #0E7490; font-size: 18px; font-weight: 700; }
-                Text { text: summary; color: #123C44; font-size: 13px; wrap: word-wrap; }
+                ScrollView {
+                    Text {
+                        width: parent.visible-width;
+                        text: summary;
+                        color: #123C44;
+                        font-size: 14px;
+                        wrap: word-wrap;
+                    }
+                }
             }
         }
     }
@@ -193,12 +253,11 @@ component MenuRow inherits Rectangle {
 
 export component TrayMenu inherits Window {
     callback act(int);
-    in property <string> toggle_text: "暂停记录";
     no-frame: true;
     always-on-top: true;
     background: transparent;
     width: 160px;
-    height: 162px;
+    height: 90px;
     Rectangle {
         background: #FFFFFF;
         border-radius: 14px;
@@ -216,24 +275,10 @@ export component TrayMenu inherits Window {
                 }
             }
             MenuRow {
-                label: root.toggle_text;
-                dot: #16A34A;
-                clicked => {
-                    root.act(1);
-                }
-            }
-            MenuRow {
-                label: "立即生成总结";
-                dot: #7C3AED;
-                clicked => {
-                    root.act(2);
-                }
-            }
-            MenuRow {
                 label: "退出";
                 dot: #EF4444;
                 clicked => {
-                    root.act(3);
+                    root.act(1);
                 }
             }
         }

@@ -182,17 +182,15 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
     Ok(())
 }
 
-/// 采集控制：暂停/停止标志（托盘线程与采集线程共享）。
+/// 采集控制：停止标志（托盘线程与采集线程共享）。
 #[cfg(windows)]
 pub struct Control {
-    pub paused: std::sync::atomic::AtomicBool,
     pub stop: std::sync::atomic::AtomicBool,
 }
 #[cfg(windows)]
 impl Control {
     pub fn new() -> Self {
         Self {
-            paused: std::sync::atomic::AtomicBool::new(false),
             stop: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -231,14 +229,6 @@ pub fn run_daemon(
 
     while !ctrl.stop.load(Ordering::Relaxed) {
         let ts = now_unix();
-        if ctrl.paused.load(Ordering::Relaxed) {
-            if let Some(done) = sb.finish(ts) {
-                buffer.push(done);
-            }
-            flush_buffer(&mut storage, &mut buffer);
-            std::thread::sleep(poll);
-            continue;
-        }
         collect_once(cfg, &autostart_set, threshold_ms, ts, &mut sb, &mut buffer);
 
         // 心跳每 ~30s 写一次即可（仅用于崩溃残留兜底），不必每轮写盘。
