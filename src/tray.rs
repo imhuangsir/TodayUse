@@ -1,10 +1,10 @@
-//! 系统托盘 + 后台常驻采集。右键弹出便当盒风格自绘菜单（非系统原生菜单）。
+//! 系统托盘 + 后台常驻采集。右键弹便当盒自绘菜单（单实例复用）。启动预热窗口。
 #![cfg(windows)]
 
 use crate::collector::Control;
 use crate::config::Config;
 use slint::ComponentHandle;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -56,18 +56,60 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
     }
     let _tray = builder.build().map_err(|e| e.to_string())?;
 
-    let menu: Rc<RefCell<Option<crate::ui::TrayMenu>>> = Rc::new(RefCell::new(None));
-    let win: Rc<RefCell<Option<crate::ui::Dashboard>>> = Rc::new(RefCell::new(None));
-    let menu_hwnd: Rc<Cell<Option<isize>>> = Rc::new(Cell::new(None));
-    let close_req = Rc::new(Cell::new(false));
+    // 仪表盘窗口懒创建、之后复用刷新（软件渲染器，开销小，无需常驻预热）。
+    let win: Rc<std::cell::RefCell<Option<crate::ui::Dashboard>>> =
+        Rc::new(std::cell::RefCell::new(None));
+
+    // 便当盒菜单：单实例，创建一次并预热；之后只重定位/显示/隐藏。
+    let menu = crate::ui::TrayMenu::new().map_err(|e| e.to_string())?;
+    let menu_visible = Rc::new(Cell::new(false));
+    {
+        let menu_weak = menu.as_weak();
+        let (c2, db2, cfg2, win2, mv2) = (
+            ctrl.clone(),
+            db_path.clone(),
+            cfg.clone(),
+            win.clone(),
+            menu_visible.clone(),
+        );
+        menu.on_act(move |which| {
+            if let Some(mm) = menu_weak.upgrade() {
+                let _ = mm.hide(); // 先立即收起菜单，再执行动作
+            }
+            mv2.set(false);
+            match which {
+                0 => {
+                    let mut wb = win2.borrow_mut();
+                    if let Some(d) = wb.as_ref() {
+                        let _ = crate::ui::refresh_dashboard(d, &db2);
+                        let _ = d.show();
+                    } else if let Ok(d) = crate::ui::build_dashboard(&db2) {
+                        let _ = d.show();
+                        *wb = Some(d);
+                    }
+                }
+                1 => {
+                    let p = !c2.paused.load(Ordering::Relaxed);
+                    c2.paused.store(p, Ordering::Relaxed);
+                }
+                2 => spawn_summary(cfg2.clone(), db2.clone()),
+                3 => {
+                    c2.stop.store(true, Ordering::Relaxed);
+                    let _ = slint::quit_event_loop();
+                }
+                _ => {}
+            }
+        });
+    }
+
+    // __TRAY_TIMER__
     let tray_rx = TrayIconEvent::receiver();
     let timer = slint::Timer::default();
-    let ctrl_c = ctrl.clone();
-    let cfg_c = cfg.clone();
-    let db_c = db_path.clone();
+    let menu_hwnd: Cell<Option<isize>> = Cell::new(None);
+    let mv = menu_visible.clone();
+    let ctrl_t = ctrl.clone();
 
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(120), move || {
-        // __TIMER_BODY__
         while let Ok(ev) = tray_rx.try_recv() {
             let right_up = matches!(
                 ev,
@@ -80,12 +122,8 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
             if !right_up {
                 continue;
             }
-            *menu.borrow_mut() = None;
-            menu_hwnd.set(None);
-            close_req.set(false);
-            let Ok(m) = crate::ui::TrayMenu::new() else { continue };
-            m.set_toggle_text(
-                if ctrl_c.paused.load(Ordering::Relaxed) {
+            menu.set_toggle_text(
+                if ctrl_t.paused.load(Ordering::Relaxed) {
                     "恢复记录"
                 } else {
                     "暂停记录"
@@ -96,67 +134,27 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
             unsafe {
                 let _ = GetCursorPos(&mut pt);
             }
-            // 按系统 DPI 换算菜单物理尺寸，开在光标左上方（托盘在右下角），贴边保护
             let scale = (unsafe { GetDpiForSystem() } as f32 / 96.0).max(1.0);
             let pw = (160.0 * scale) as i32;
             let ph = (162.0 * scale) as i32;
             let mx = (pt.x - pw).max(4);
             let my = (pt.y - ph).max(4);
-            m.window().set_position(slint::PhysicalPosition::new(mx, my));
-            let weak = m.as_weak();
-            let (c2, db2, cfg2, win2, close2) = (
-                ctrl_c.clone(),
-                db_c.clone(),
-                cfg_c.clone(),
-                win.clone(),
-                close_req.clone(),
-            );
-            m.on_act(move |which| {
-                match which {
-                    0 => {
-                        let mut wb = win2.borrow_mut();
-                        if let Some(d) = wb.as_ref() {
-                            let _ = crate::ui::refresh_dashboard(d, &db2);
-                            let _ = d.show();
-                        } else if let Ok(d) = crate::ui::build_dashboard(&db2) {
-                            let _ = d.show();
-                            *wb = Some(d);
-                        }
-                    }
-                    1 => {
-                        let p = !c2.paused.load(Ordering::Relaxed);
-                        c2.paused.store(p, Ordering::Relaxed);
-                    }
-                    2 => spawn_summary(cfg2.clone(), db2.clone()),
-                    3 => {
-                        c2.stop.store(true, Ordering::Relaxed);
-                        let _ = slint::quit_event_loop();
-                    }
-                    _ => {}
-                }
-                if let Some(mm) = weak.upgrade() {
-                    let _ = mm.hide();
-                }
-                close2.set(true);
-            });
-            let _ = m.show();
-            *menu.borrow_mut() = Some(m);
+            menu.window()
+                .set_position(slint::PhysicalPosition::new(mx, my));
+            let _ = menu.show();
+            mv.set(true);
+            menu_hwnd.set(None);
         }
 
-        if menu.borrow().is_some() {
-            if close_req.get() {
-                *menu.borrow_mut() = None;
-                menu_hwnd.set(None);
-                close_req.set(false);
-            } else {
-                let fg = unsafe { GetForegroundWindow() }.0 as isize;
-                match menu_hwnd.get() {
-                    None => menu_hwnd.set(Some(fg)),
-                    Some(h) => {
-                        if fg != h {
-                            *menu.borrow_mut() = None;
-                            menu_hwnd.set(None);
-                        }
+        if mv.get() {
+            let fg = unsafe { GetForegroundWindow() }.0 as isize;
+            match menu_hwnd.get() {
+                None => menu_hwnd.set(Some(fg)),
+                Some(h) => {
+                    if fg != h {
+                        let _ = menu.hide();
+                        mv.set(false);
+                        menu_hwnd.set(None);
                     }
                 }
             }
