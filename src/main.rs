@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use activity_tracker::{
     aggregate, config::Config, logging, model::ActivityEvent, session::SessionBuilder,
     storage::Storage,
@@ -9,7 +11,19 @@ fn local_offset() -> UtcOffset {
     UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC)
 }
 
+#[cfg(windows)]
+fn set_app_user_model_id() {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    let id: Vec<u16> = "HuangYonghao.JinTianYongSha\0".encode_utf16().collect();
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(PCWSTR(id.as_ptr()));
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    set_app_user_model_id();
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
         Some("replay") => {
