@@ -76,9 +76,9 @@ export component Dashboard inherits Window {
     background: transparent;
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 14px;
-    // 固定窗口尺寸。高度略降，避免居中后底部(AI 总结)被任务栏/屏幕边缘截断。
+    // 固定窗口尺寸。内容比 700 稍高会导致底部(AI 总结)溢出被裁，故把各行/卡片压紧让内容整体 < 700。
     width: 980px;
-    height: 656px;
+    height: 700px;
 
     Rectangle {
         width: 100%;
@@ -171,14 +171,14 @@ export component Dashboard inherits Window {
                     spacing: 10px;
                     Text { text: "应用时长"; color: #15803D; font-size: 18px; font-weight: 700; }
                     for a[i] in appbars : HorizontalLayout {
-                        height: 32px;
+                        height: 26px;
                         spacing: 10px;
                         Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            border-radius: 7px;
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 6px;
                             background: a.name == "" ? #00000000 : #FFFFFFC0;
-                            Image { width: 20px; height: 20px; source: a.icon; image-fit: contain; }
+                            Image { width: 18px; height: 18px; source: a.icon; image-fit: contain; }
                         }
                         VerticalLayout {
                             spacing: 3px;
@@ -232,7 +232,7 @@ export component Dashboard inherits Window {
                     Text { text: "Top 网站"; color: #6D28D9; font-size: 18px; font-weight: 700; }
                     // 固定 5 行（不足补空行），保证有无数据时卡片外观一致
                     for s in sites : Rectangle {
-                        height: 22px;
+                        height: 20px;
                         Text { width: 100%; text: s; color: root.refreshing ? #2E1A5400 : #2E1A54; animate color { duration: 180ms; } font-size: 13px; vertical-alignment: center; overflow: elide; }
                     }
                 }
@@ -247,7 +247,7 @@ export component Dashboard inherits Window {
                     spacing: 6px;
                     Text { text: "Top 视频"; color: #C2410C; font-size: 18px; font-weight: 700; }
                     for v in videos : Rectangle {
-                        height: 22px;
+                        height: 20px;
                         Text { width: 100%; text: v; color: root.refreshing ? #5A2A1100 : #5A2A11; animate color { duration: 180ms; } font-size: 13px; vertical-alignment: center; overflow: elide; }
                     }
                 }
@@ -255,7 +255,7 @@ export component Dashboard inherits Window {
         }
 
         Card {
-            height: 110px;
+            height: 100px;
             background: #CBE8EC;
             VerticalLayout {
                 padding: 18px;
