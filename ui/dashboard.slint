@@ -76,9 +76,9 @@ export component Dashboard inherits Window {
     background: transparent;
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 14px;
-    // 固定窗口尺寸：无论今日/近7天/近30天/全部，窗口与各卡片大小都不变（配合固定行数/柱数 + Card clip）。
+    // 固定窗口尺寸。高度略降，避免居中后底部(AI 总结)被任务栏/屏幕边缘截断。
     width: 980px;
-    height: 700px;
+    height: 656px;
 
     Rectangle {
         width: 100%;
