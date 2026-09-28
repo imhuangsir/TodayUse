@@ -126,7 +126,7 @@ fn fill_range(
             "（历史 / 累计视图不自动生成 AI 总结）".to_string()
         }
     });
-    ui.set_summary(summary.into());
+    set_summary_image(ui, &summary);
     Ok(())
 }
 
@@ -152,6 +152,27 @@ pub fn refresh_range_preset(ui: &Dashboard, db_path: &str, n: i32) -> Result<(),
     ui.set_history_mode(true);
     ui.set_active_range(n);
     fill_range(ui, db_path, start, now_ts, label.to_string(), false)
+}
+
+/// 把总结文本(含 emoji)用 DirectWrite 渲成图片，填到 AI 卡片(软件渲染器能画图→彩色 emoji 可显示)。
+pub fn set_summary_image(ui: &Dashboard, text: &str) {
+    let scale = ui.window().scale_factor().max(1.0);
+    let logical_w = 850.0_f32; // AI 卡片内容宽度(留出竖滚动条余量，避免横向滚动条)
+    let phys_w = (logical_w * scale).max(1.0) as u32;
+    match crate::textimg::render_text(text, phys_w, 14.0 * scale, 0x123C44) {
+        Some((w, h, rgba)) => {
+            let mut pb = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+            pb.make_mut_bytes().copy_from_slice(&rgba);
+            ui.set_summary_img(slint::Image::from_rgba8(pb));
+            ui.set_summary_img_w(w as f32 / scale);
+            ui.set_summary_img_h(h as f32 / scale);
+        }
+        None => {
+            ui.set_summary_img(slint::Image::default());
+            ui.set_summary_img_w(0.0);
+            ui.set_summary_img_h(0.0);
+        }
+    }
 }
 
 fn app_icon_image() -> slint::Image {

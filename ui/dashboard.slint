@@ -46,7 +46,9 @@ export component Dashboard inherits Window {
     in property <[AppBar]> appbars;
     in property <[string]> sites;
     in property <[string]> videos;
-    in property <string> summary;
+    in property <image> summary-img;
+    in property <length> summary-img-w;
+    in property <length> summary-img-h;
     in property <image> app_icon;
     in property <bool> history_mode;
     in property <int> active_range;
@@ -262,13 +264,12 @@ export component Dashboard inherits Window {
                 spacing: 6px;
                 Text { text: "AI 总结"; color: #0E7490; font-size: 18px; font-weight: 700; }
                 ScrollView {
-                    Text {
-                        width: parent.visible-width;
-                        text: summary;
-                        color: root.refreshing ? #123C4400 : #123C44;
-                        animate color { duration: 180ms; }
-                        font-size: 14px;
-                        wrap: word-wrap;
+                    // 总结用 DirectWrite 渲成图片显示(软件渲染器能画图、从而支持彩色 emoji)
+                    Image {
+                        source: root.summary-img;
+                        width: root.summary-img-w;
+                        height: root.summary-img-h;
+                        image-fit: fill;
                     }
                 }
             }

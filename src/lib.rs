@@ -22,5 +22,7 @@ pub mod session;
 pub mod storage;
 pub mod summarize;
 #[cfg(windows)]
+pub mod textimg;
+#[cfg(windows)]
 pub mod tray;
 pub mod ui;

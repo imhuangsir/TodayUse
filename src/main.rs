@@ -88,6 +88,29 @@ fn main() {
         Some("diagwin") => {
             activity_tracker::ui::diag_run(&args[2]);
         }
+        #[cfg(windows)]
+        Some("rendertest") => {
+            match activity_tracker::textimg::render_text(&args[2], 800, 28.0, 0x123C44) {
+                Some((w, h, rgba)) => {
+                    let _ = image::save_buffer(&args[3], &rgba, w, h, image::ExtendedColorType::Rgba8);
+                    // 统计"非文字色、非透明"像素(≈emoji 彩色)占比
+                    let mut colored = 0u32;
+                    let mut opaque = 0u32;
+                    for px in rgba.chunks_exact(4) {
+                        if px[3] > 40 {
+                            opaque += 1;
+                            let near_text = px[0] < 60 && px[1] < 90 && px[2] < 90;
+                            if !near_text {
+                                colored += 1;
+                            }
+                        }
+                    }
+                    println!("rendered {w}x{h} -> {}", args[3]);
+                    println!("不透明像素={opaque} 其中非文字色(疑似彩色emoji)={colored}");
+                }
+                None => println!("render failed"),
+            }
+        }
         Some("set-key") => {
             // 从 stdin 读入 API key（避免出现在命令行/进程列表），DPAPI 加密存到 key.bin。
             use std::io::Read;

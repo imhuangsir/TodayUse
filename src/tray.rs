@@ -239,7 +239,7 @@ fn set_summary_ui(win_weak: &slint::Weak<crate::ui::Dashboard>, text: String) {
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(u) = weak.upgrade() {
             if !u.get_history_mode() {
-                u.set_summary(text.into());
+                crate::ui::set_summary_image(&u, &text);
             }
         }
     });

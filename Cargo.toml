@@ -26,6 +26,11 @@ windows = { version = "0.58", features = [
     "Win32_UI_Accessibility",
     "Win32_UI_Shell",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Imaging",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Variant",
@@ -33,6 +38,7 @@ windows = { version = "0.58", features = [
     "Win32_Security_Cryptography",
     "Media_Control",
     "Foundation",
+    "Foundation_Numerics",
 ] }
 tray-icon = "0.19"
 
