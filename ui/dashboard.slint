@@ -51,11 +51,11 @@ export component Dashboard inherits Window {
     in property <bool> history_mode;
     in property <int> active_range;
     in property <bool> refreshing;
-    // 数字滚动：纯别名绑定(val: active-sec)不会触发动画，改成 changed 里命令式赋值给带 animate 的 shown 属性。
+    // 数字滚动：用 linear 让数字匀速逐格变化（ease-out 会把大部分变化压在开头，增大时看着像瞬间跳到位）。
     property <float> active-shown;
     property <float> idle-shown;
-    animate active-shown { duration: 700ms; easing: ease-out; }
-    animate idle-shown { duration: 700ms; easing: ease-out; }
+    animate active-shown { duration: 800ms; easing: linear; }
+    animate idle-shown { duration: 800ms; easing: linear; }
     changed active-sec => { self.active-shown = self.active-sec; }
     changed idle-sec => { self.idle-shown = self.idle-sec; }
     callback close-clicked();
