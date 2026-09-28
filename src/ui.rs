@@ -57,6 +57,16 @@ fn cached_icon(process_path: &str) -> slint::Image {
     })
 }
 
+/// 提示系统回收工作集内存（窗口隐藏/空闲时调用；下次用到自动换回，几乎无感）。让空闲内存降下来。
+pub fn trim_memory() {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+        // 传 (SIZE_T)-1 让系统把工作集裁到最小
+        let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+}
+
 /// 核心填充：按 [start,end) 聚合并填入所有卡片。today 决定 AI 卡的占位文案。
 fn fill_range(
     ui: &Dashboard,
@@ -174,6 +184,7 @@ pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
     ui.on_close_clicked(move || {
         if let Some(u) = w1.upgrade() {
             let _ = u.hide();
+            trim_memory(); // 隐藏后回收工作集，空闲内存降下来
         }
     });
     // 无边框窗口拖动：交给 winit 的原生拖动（比手动 set_outer_position 稳，能真正跟手）。

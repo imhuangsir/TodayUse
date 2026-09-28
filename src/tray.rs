@@ -111,6 +111,8 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
         }
         Err(e) => log::error!("预热仪表盘失败: {e}"),
     }
+    // 预热窗口隐藏后回收一次工作集，压低空闲内存
+    slint::Timer::single_shot(Duration::from_millis(3000), || crate::ui::trim_memory());
 
     // 便当盒菜单：单实例，创建一次并预热；之后只重定位/显示/隐藏。
     let menu = crate::ui::TrayMenu::new().map_err(|e| e.to_string())?;
@@ -193,7 +195,25 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
         }
     });
 
+    // 定期回收工作集（仅当仪表盘隐藏时），保证长时间挂后台的空闲内存不涨。
+    let trim_timer = slint::Timer::default();
+    {
+        let win_t = win.clone();
+        trim_timer.start(slint::TimerMode::Repeated, Duration::from_secs(90), move || {
+            let hidden = win_t.borrow().as_ref().map_or(true, |d| {
+                let mut visible = false;
+                d.window()
+                    .with_winit_window(|w| visible = w.is_visible().unwrap_or(false));
+                !visible
+            });
+            if hidden {
+                crate::ui::trim_memory();
+            }
+        });
+    }
+
     slint::run_event_loop_until_quit().map_err(|e| e.to_string())?;
+    let _ = &trim_timer;
     ctrl.stop.store(true, Ordering::Relaxed);
     Ok(())
 }
