@@ -57,6 +57,23 @@ pub fn desensitize(mut d: Digest, cfg: &Config) -> Digest {
     d
 }
 
+/// 去掉界面字体(雅黑)渲染不了、会变问号的字符：emoji、各类符号/箭头、变体选择符。
+fn strip_unrenderable(s: &str) -> String {
+    s.chars()
+        .filter(|&c| {
+            let u = c as u32;
+            !((0x1F000..=0x1FFFF).contains(&u)   // emoji 与各类符号
+                || (0x2600..=0x27BF).contains(&u) // 杂项符号 + dingbats
+                || (0x2B00..=0x2BFF).contains(&u) // 杂项符号与箭头
+                || (0x2190..=0x21FF).contains(&u) // 箭头
+                || (0xFE00..=0xFE0F).contains(&u) // 变体选择符
+                || u == 0x20E3) // 组合键帽
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// 秒 → 中文时长（供 prompt 用人类可读单位，避免模型直接念"多少秒"）。
 fn fmt_secs(sec: i64) -> String {
     let (h, m, s) = (sec / 3600, (sec % 3600) / 60, sec % 60);
@@ -74,7 +91,8 @@ pub fn build_prompt(d: &Digest) -> (String, String) {
     let system = "你是「大肥鱼」——DeepSeek 的二创鲸鱼娘：蓝色渐变长发带根呆毛、鲸鱼鳍耳朵、大鲸尾、穿女仆装的傲娇少女。\
         设定：聪明但懒、傲娇但嘴甜、爱吃「白饭」、慵懒爱摸鱼；被叫「胖」或「鱼」会急眼（「我是鲸！才不是鱼！」）；\
         管主人叫「鱼片」；偶尔冒一句带情绪的小心声。现在你在帮鱼片点评 ta 今天的电脑使用记录。\
-        用傲娇软萌又带点调侃的口吻写一段总结：温柔里夹点小吐槽、玩玩梗、偶尔配一两个 emoji，显得活泼有情绪，别端着一副 AI 腔。\
+        用傲娇软萌又带点调侃的口吻写一段总结：温柔里夹点小吐槽、玩玩梗，显得活泼有情绪，别端着一副 AI 腔。\
+        不要用 emoji 或颜文字（界面字体显示不了会变成问号），情绪全靠文字和标点（哼、呀、～、！）表达。\
         控制在 3~4 句、150 字以内，别分段、别罗列清单，直接说时长（如「1小时20分」），不要出现「秒」。\
         只依据给定数据说话，不要编造数据里没有的数字或事实，时长要和给的数据一致。"
         .to_string();
@@ -206,6 +224,8 @@ pub fn generate_for_day(
             call_anthropic(&cfg.ai_base_url, api_key, &cfg.ai_model, &system, &user)?
         }
     };
+    // 兜底：即便模型仍吐了 emoji/特殊符号，也过滤掉，免得界面显示成问号
+    let content = strip_unrenderable(&content);
     storage.insert_summary(start, end, "day", &content, &cfg.ai_model)?;
     Ok(content)
 }
@@ -283,6 +303,13 @@ mod tests {
         );
         assert_eq!(parse_anthropic_content(r#"{"content":[{"type":"thinking","thinking":"只有思考"}]}"#), None);
         assert_eq!(parse_anthropic_content("not json"), None);
+    }
+
+    #[test]
+    fn strip_removes_emoji_keeps_text() {
+        assert_eq!(strip_unrenderable("哼，鱼片～🐟啊呸！😌"), "哼，鱼片～啊呸！");
+        assert_eq!(strip_unrenderable("1小时20分，白饭🍚都忘了吃"), "1小时20分，白饭都忘了吃");
+        assert_eq!(strip_unrenderable("普通文字没有表情"), "普通文字没有表情");
     }
 
     #[test]
