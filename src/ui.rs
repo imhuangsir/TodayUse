@@ -1,6 +1,7 @@
 //! Slint 仪表盘窗口（Bento Box 风格）。UI 定义在 ui/dashboard.slint，由 build.rs 编译。
 use crate::{aggregate, storage::Storage};
 use slint::ComponentHandle;
+use slint::Model;
 use slint::winit_030::WinitWindowAccessor;
 use std::rc::Rc;
 use time::{OffsetDateTime, UtcOffset};
@@ -70,8 +71,8 @@ fn fill_range(
 
     ui.set_app_icon(app_icon_image());
     ui.set_date(label.into());
-    ui.set_active(fmt_dur(aggregate::total_active_sec(&sessions)).into());
-    ui.set_idle(fmt_dur(aggregate::total_idle_sec(&sessions)).into());
+    ui.set_active_sec(aggregate::total_active_sec(&sessions) as i32);
+    ui.set_idle_sec(aggregate::total_idle_sec(&sessions) as i32);
     let apps = aggregate::app_durations(&sessions);
     let max = apps.first().map(|b| b.seconds).unwrap_or(1).max(1);
 
@@ -83,27 +84,29 @@ fn fill_range(
             .or_insert_with(|| s.process_path.clone());
     }
 
-    // 固定 5 行应用（不足补空行），保证今日/各时间段的卡片高度一致、窗口不变形。
+    // 固定 5 行应用；**原地更新每行**（不重建元素）→ 切换时柱长做平滑动画。不足补空行。
     const APP_ROWS: usize = 5;
     let top: Vec<&aggregate::Bucket> = apps.iter().take(APP_ROWS).collect();
-    let mut appbars: Vec<AppBar> = top
-        .iter()
-        .map(|b| AppBar {
-            name: b.name.clone().into(),
-            dur: fmt_dur(b.seconds).into(),
-            frac: b.seconds as f32 / max as f32,
-        })
-        .collect();
-    let mut icons: Vec<slint::Image> = top
-        .iter()
-        .map(|b| path_of.get(&b.name).map(|p| cached_icon(p)).unwrap_or_default())
-        .collect();
-    while appbars.len() < APP_ROWS {
-        appbars.push(AppBar { name: "".into(), dur: "".into(), frac: 0.0 });
-        icons.push(slint::Image::default());
+    let model = ui.get_appbars();
+    if let Some(vm) = model.as_any().downcast_ref::<slint::VecModel<AppBar>>() {
+        for i in 0..APP_ROWS {
+            let bar = match top.get(i) {
+                Some(b) => AppBar {
+                    name: b.name.clone().into(),
+                    dur: fmt_dur(b.seconds).into(),
+                    frac: b.seconds as f32 / max as f32,
+                    icon: path_of.get(&b.name).map(|p| cached_icon(p)).unwrap_or_default(),
+                },
+                None => AppBar {
+                    name: "".into(),
+                    dur: "".into(),
+                    frac: 0.0,
+                    icon: slint::Image::default(),
+                },
+            };
+            vm.set_row_data(i, bar);
+        }
     }
-    ui.set_appbars(Rc::new(slint::VecModel::from(appbars)).into());
-    ui.set_icons(Rc::new(slint::VecModel::from(icons)).into());
     ui.set_sites(Rc::new(slint::VecModel::from(rows(&aggregate::domain_durations(&sessions), 5))).into());
     ui.set_videos(Rc::new(slint::VecModel::from(rows(&aggregate::top_videos(&sessions), 5))).into());
     let summary = st.latest_summary(start, end)?.unwrap_or_else(|| {
@@ -154,6 +157,16 @@ fn app_icon_image() -> slint::Image {
 /// 新建并填充仪表盘窗口。
 pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
     let ui = Dashboard::new().map_err(|e| e.to_string())?;
+    // 预置 5 行空 appbar，模型长度稳定 → 之后原地更新每行，柱长可做平滑动画。
+    let empty: Vec<AppBar> = (0..5)
+        .map(|_| AppBar {
+            name: "".into(),
+            dur: "".into(),
+            frac: 0.0,
+            icon: slint::Image::default(),
+        })
+        .collect();
+    ui.set_appbars(Rc::new(slint::VecModel::from(empty)).into());
     refresh_dashboard(&ui, db_path)?;
 
     // 无边框窗口：自定义关闭按钮 → 隐藏(保活, 再开不再白屏)；标题栏拖动 → 移动窗口
@@ -185,18 +198,18 @@ pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
     ui.on_pick_range(move |n| {
         if let Some(u) = w4.upgrade() {
             u.set_active_range(n); // 立即高亮所选分段（响应快）
-            u.set_refreshing(true); // 内容滑出
+            u.set_refreshing(true); // 文字淡出（颜色渐隐到卡片底色）
             let wk = u.as_weak();
             let db = db4.clone();
-            // 等滑出动画(240ms)基本完成再换数据，然后滑回 → PPT 式横向推移
-            slint::Timer::single_shot(std::time::Duration::from_millis(250), move || {
+            // 文字淡出(180ms)后换数据：数字滚动、柱长伸缩、文字淡入，一起做 morph。
+            slint::Timer::single_shot(std::time::Duration::from_millis(190), move || {
                 if let Some(u) = wk.upgrade() {
                     let _ = if n == 0 {
                         refresh_dashboard(&u, &db)
                     } else {
                         refresh_range_preset(&u, &db, n)
                     };
-                    u.set_refreshing(false); // 换好数据后滑回
+                    u.set_refreshing(false); // 文字淡入 + 数字/柱状开始动画
                 }
             });
         }

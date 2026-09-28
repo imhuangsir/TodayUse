@@ -1,7 +1,16 @@
 import { ScrollView } from "std-widgets.slint";
 
-// Bento Box 风格仪表盘：每张卡片纯色圆角，应用时长为柱状图。
-struct AppBar { name: string, dur: string, frac: float }
+// Bento Box 风格仪表盘：每张卡片纯色圆角，应用时长为柱状图。icon 放进结构体，切换时原地更新以便柱长做动画。
+struct AppBar { name: string, dur: string, frac: float, icon: image }
+
+// 时长格式化（秒 → 中文），用于数字滚动动画时实时格式化。
+global Fmt {
+    public pure function dur(sec: float) -> string {
+        return sec >= 3600
+            ? "\{Math.floor(sec / 3600)}小时\{Math.floor((sec - Math.floor(sec / 3600) * 3600) / 60)}分"
+            : (sec >= 60 ? "\{Math.floor(sec / 60)}分" : "\{Math.floor(sec)}秒");
+    }
+}
 
 // 软件渲染器下：纯色 + border-radius 才能可靠出圆角（渐变/阴影不被裁到圆角）。clip 保证内容不撑大卡片。
 component Card inherits Rectangle {
@@ -32,10 +41,9 @@ component Chip inherits Rectangle {
 
 export component Dashboard inherits Window {
     in property <string> date;
-    in property <string> active;
-    in property <string> idle;
+    in property <int> active-sec;
+    in property <int> idle-sec;
     in property <[AppBar]> appbars;
-    in property <[image]> icons;
     in property <[string]> sites;
     in property <[string]> videos;
     in property <string> summary;
@@ -43,6 +51,13 @@ export component Dashboard inherits Window {
     in property <bool> history_mode;
     in property <int> active_range;
     in property <bool> refreshing;
+    // 数字滚动：纯别名绑定(val: active-sec)不会触发动画，改成 changed 里命令式赋值给带 animate 的 shown 属性。
+    property <float> active-shown;
+    property <float> idle-shown;
+    animate active-shown { duration: 700ms; easing: ease-out; }
+    animate idle-shown { duration: 700ms; easing: ease-out; }
+    changed active-sec => { self.active-shown = self.active-sec; }
+    changed idle-sec => { self.idle-shown = self.idle-sec; }
     callback close-clicked();
     callback start-drag();
     callback pick-range(int);
@@ -57,6 +72,8 @@ export component Dashboard inherits Window {
     height: 700px;
 
     Rectangle {
+        width: 100%;
+        height: 100%;
         background: #EEEFF2;
         border-radius: 24px;
 
@@ -108,12 +125,10 @@ export component Dashboard inherits Window {
         Rectangle {
             vertical-stretch: 1;
             clip: true;
-            stage := VerticalLayout {
-                x: root.refreshing ? self.width : 0px;
+            VerticalLayout {
                 width: parent.width;
                 height: parent.height;
                 spacing: 16px;
-                animate x { duration: 240ms; easing: ease-in-out; }
 
         HorizontalLayout {
             spacing: 16px;
@@ -125,8 +140,14 @@ export component Dashboard inherits Window {
                     padding: 22px;
                     spacing: 8px;
                     Text { text: "有效时长"; color: #1D4ED8; font-size: 18px; font-weight: 700; }
-                    Text { text: active; color: #12245B; font-size: 40px; font-weight: 700; }
-                    Text { text: "空闲 " + idle; color: #33477E; font-size: 14px; }
+                    Text {
+                        text: Fmt.dur(root.active-shown);
+                        color: #12245B; font-size: 40px; font-weight: 700;
+                    }
+                    Text {
+                        text: "空闲 " + Fmt.dur(root.idle-shown);
+                        color: #33477E; font-size: 14px;
+                    }
                 }
             }
             Card {
@@ -137,20 +158,31 @@ export component Dashboard inherits Window {
                     spacing: 10px;
                     Text { text: "应用时长"; color: #15803D; font-size: 18px; font-weight: 700; }
                     for a[i] in appbars : HorizontalLayout {
+                        height: 32px;
                         spacing: 10px;
                         Rectangle {
                             width: 28px;
                             height: 28px;
                             border-radius: 7px;
-                            background: #FFFFFFC0;
-                            Image { width: 20px; height: 20px; source: icons[i]; image-fit: contain; }
+                            background: a.name == "" ? #00000000 : #FFFFFFC0;
+                            Image { width: 20px; height: 20px; source: a.icon; image-fit: contain; }
                         }
                         VerticalLayout {
                             spacing: 3px;
                             HorizontalLayout {
-                                Text { text: a.name; color: #14361F; font-size: 13px; }
+                                Text {
+                                    text: a.name;
+                                    color: root.refreshing ? #14361F00 : #14361F;
+                                    animate color { duration: 180ms; }
+                                    font-size: 13px;
+                                }
                                 Rectangle { horizontal-stretch: 1; }
-                                Text { text: a.dur; color: #2F5B3F; font-size: 12px; }
+                                Text {
+                                    text: a.dur;
+                                    color: root.refreshing ? #2F5B3F00 : #2F5B3F;
+                                    animate color { duration: 180ms; }
+                                    font-size: 12px;
+                                }
                             }
                             Rectangle {
                                 height: 7px;
@@ -161,7 +193,9 @@ export component Dashboard inherits Window {
                                     y: 0;
                                     height: 7px;
                                     border-radius: 3px;
+                                    // 柱长平滑伸缩（切换时间范围时 morph）
                                     width: parent.width * a.frac;
+                                    animate width { duration: 550ms; easing: ease-out; }
                                     background: #15803D;
                                 }
                             }
@@ -184,7 +218,7 @@ export component Dashboard inherits Window {
                     // 固定 5 行（不足补空行），保证有无数据时卡片外观一致
                     for s in sites : Rectangle {
                         height: 22px;
-                        Text { width: 100%; text: s; color: #2E1A54; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                        Text { width: 100%; text: s; color: root.refreshing ? #2E1A5400 : #2E1A54; animate color { duration: 180ms; } font-size: 13px; vertical-alignment: center; overflow: elide; }
                     }
                 }
             }
@@ -197,7 +231,7 @@ export component Dashboard inherits Window {
                     Text { text: "Top 视频"; color: #C2410C; font-size: 18px; font-weight: 700; }
                     for v in videos : Rectangle {
                         height: 22px;
-                        Text { width: 100%; text: v; color: #5A2A11; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                        Text { width: 100%; text: v; color: root.refreshing ? #5A2A1100 : #5A2A11; animate color { duration: 180ms; } font-size: 13px; vertical-alignment: center; overflow: elide; }
                     }
                 }
             }
@@ -214,7 +248,8 @@ export component Dashboard inherits Window {
                     Text {
                         width: parent.visible-width;
                         text: summary;
-                        color: #123C44;
+                        color: root.refreshing ? #123C4400 : #123C44;
+                        animate color { duration: 180ms; }
                         font-size: 14px;
                         wrap: word-wrap;
                     }
