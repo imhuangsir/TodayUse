@@ -185,17 +185,18 @@ pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
     ui.on_pick_range(move |n| {
         if let Some(u) = w4.upgrade() {
             u.set_active_range(n); // 立即高亮所选分段（响应快）
-            u.set_refreshing(true); // 内容淡出
+            u.set_refreshing(true); // 内容滑出
             let wk = u.as_weak();
             let db = db4.clone();
-            slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+            // 等滑出动画(240ms)基本完成再换数据，然后滑回 → PPT 式横向推移
+            slint::Timer::single_shot(std::time::Duration::from_millis(250), move || {
                 if let Some(u) = wk.upgrade() {
                     let _ = if n == 0 {
                         refresh_dashboard(&u, &db)
                     } else {
                         refresh_range_preset(&u, &db, n)
                     };
-                    u.set_refreshing(false); // 换好数据后淡入
+                    u.set_refreshing(false); // 换好数据后滑回
                 }
             });
         }

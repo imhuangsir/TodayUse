@@ -104,11 +104,20 @@ export component Dashboard inherits Window {
                 }
             }
 
+        // 舞台：切换时间范围时，整块内容做 PPT 式横向平滑推移（clip 裁掉滑出的部分）。不用 opacity（软件渲染器 + 悬停局部重绘会出问题）。
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            stage := VerticalLayout {
+                x: root.refreshing ? self.width : 0px;
+                width: parent.width;
+                height: parent.height;
+                spacing: 16px;
+                animate x { duration: 240ms; easing: ease-in-out; }
+
         HorizontalLayout {
             spacing: 16px;
             vertical-stretch: 3;
-            opacity: root.refreshing ? 0.0 : 1.0;
-            animate opacity { duration: 160ms; easing: ease-in-out; }
             Card {
                 horizontal-stretch: 1;
                 background: #C4DBFF;
@@ -165,8 +174,6 @@ export component Dashboard inherits Window {
         HorizontalLayout {
             spacing: 16px;
             vertical-stretch: 2;
-            opacity: root.refreshing ? 0.0 : 1.0;
-            animate opacity { duration: 160ms; easing: ease-in-out; }
             Card {
                 horizontal-stretch: 1;
                 background: #DFCDFB;
@@ -199,8 +206,6 @@ export component Dashboard inherits Window {
         Card {
             height: 110px;
             background: #CBE8EC;
-            opacity: root.refreshing ? 0.0 : 1.0;
-            animate opacity { duration: 160ms; easing: ease-in-out; }
             VerticalLayout {
                 padding: 18px;
                 spacing: 6px;
@@ -216,6 +221,8 @@ export component Dashboard inherits Window {
                 }
             }
         }
+            } // 舞台内容 VerticalLayout 结束
+        } // 舞台 Rectangle 结束
     }
     }
 }
