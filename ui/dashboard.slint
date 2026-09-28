@@ -51,13 +51,22 @@ export component Dashboard inherits Window {
     in property <bool> history_mode;
     in property <int> active_range;
     in property <bool> refreshing;
-    // 数字滚动：用 linear 让数字匀速逐格变化（ease-out 会把大部分变化压在开头，增大时看着像瞬间跳到位）。
+    // 数字滚动：动画时长 ∝ 分钟差(每分钟约22ms, 夹在 400~2600ms)。这样匀速逐格滚动、看得清"分钟涨到60进位、
+    // 时分统一往前走"的里程表效果；差距越大整体越快(到上限封顶)。用总秒数做动画+实时格式化保证进位正确。
     property <float> active-shown;
     property <float> idle-shown;
-    animate active-shown { duration: 800ms; easing: linear; }
-    animate idle-shown { duration: 800ms; easing: linear; }
-    changed active-sec => { self.active-shown = self.active-sec; }
-    changed idle-sec => { self.idle-shown = self.idle-sec; }
+    property <float> active-roll-ms: 800;
+    property <float> idle-roll-ms: 800;
+    animate active-shown { duration: root.active-roll-ms * 1ms; easing: linear; }
+    animate idle-shown { duration: root.idle-roll-ms * 1ms; easing: linear; }
+    changed active-sec => {
+        root.active-roll-ms = Math.min(2600, Math.max(400, Math.abs(root.active-sec - root.active-shown) / 60 * 22));
+        root.active-shown = root.active-sec;
+    }
+    changed idle-sec => {
+        root.idle-roll-ms = Math.min(2600, Math.max(400, Math.abs(root.idle-sec - root.idle-shown) / 60 * 22));
+        root.idle-shown = root.idle-sec;
+    }
     callback close-clicked();
     callback start-drag();
     callback pick-range(int);
