@@ -57,16 +57,45 @@ pub fn desensitize(mut d: Digest, cfg: &Config) -> Digest {
     d
 }
 
-/// 组 (system, user) 提示词。user 内嵌摘要 JSON。
+/// 秒 → 中文时长（供 prompt 用人类可读单位，避免模型直接念"多少秒"）。
+fn fmt_secs(sec: i64) -> String {
+    let (h, m, s) = (sec / 3600, (sec % 3600) / 60, sec % 60);
+    if h > 0 {
+        format!("{h}小时{m}分")
+    } else if m > 0 {
+        format!("{m}分")
+    } else {
+        format!("{s}秒")
+    }
+}
+
+/// 组 (system, user) 提示词。user 用人类可读的时长文本（非原始秒），模型才不会照念秒数。
 pub fn build_prompt(d: &Digest) -> (String, String) {
-    let system = "你是活动日志助手。只依据给定的结构化数据，用简洁自然的中文写当天活动总结：\
-        点出时间分布、主要应用/网站/视频与可能的意图。控制在 3 句、120 字以内，不要分段、\
-        不要罗列清单，不要编造数据里没有的数字或事实。"
+    let system = "你是「大肥鱼」——一条圆滚滚、爱摸鱼、有点小机灵的蓝鲸，正帮主人看今天的电脑使用记录。\
+        请用软萌又带点调侃的口吻写一段当天总结：温柔关心里夹点小吐槽，可以玩「摸鱼/咸鱼/上岸」这类鱼类双关，\
+        偶尔配一两个 emoji（别刷屏），显得年轻活泼、有情绪起伏，别端着一副 AI 腔。\
+        控制在 3~4 句、150 字以内，别分段、别罗列清单。直接说时长（如「1小时20分」），不要出现「秒」这种机器单位。\
+        只依据给定数据说话，不要编造数据里没有的数字或事实，时长要和给的数据一致。"
         .to_string();
-    let json = serde_json::to_string_pretty(d).unwrap_or_default();
+    let line = |items: &[Bucket]| -> String {
+        if items.is_empty() {
+            return "无".to_string();
+        }
+        items
+            .iter()
+            .take(6)
+            .map(|b| format!("{}（{}）", b.name, fmt_secs(b.seconds)))
+            .collect::<Vec<_>>()
+            .join("、")
+    };
     let user = format!(
-        "以下是今天（{}）的活动聚合数据（时长单位为秒），请据此总结：\n{}",
-        d.date, json
+        "今天（{}）的活动数据：\n有效时长：{}；空闲：{}\n应用：{}\n网站：{}\n视频：{}\n请据此写总结。",
+        d.date,
+        fmt_secs(d.active_sec),
+        fmt_secs(d.idle_sec),
+        line(&d.apps),
+        line(&d.domains),
+        line(&d.videos)
     );
     (system, user)
 }
@@ -97,7 +126,7 @@ pub fn call_openai(
             {"role": "system", "content": system},
             {"role": "user", "content": user}
         ],
-        "temperature": 0.5
+        "temperature": 0.8
     });
     let resp = ureq::post(&url)
         .set("Authorization", &format!("Bearer {api_key}"))
@@ -139,6 +168,7 @@ pub fn call_anthropic(
     let body = serde_json::json!({
         "model": model,
         "max_tokens": 4096,
+        "temperature": 0.9,
         "system": system,
         "messages": [{"role": "user", "content": user}]
     });
