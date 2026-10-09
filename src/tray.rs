@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
@@ -49,10 +49,14 @@ fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &s
     let mut wb = win.borrow_mut();
     if let Some(d) = wb.as_ref() {
         // 常规路径：窗口已在启动时预热建好，刷新数据后移回屏幕中央显示（秒显、可正常绘制）。
-        let _ = crate::ui::refresh_dashboard(d, db);
+        log::info!("open_dashboard: 预热窗口存在 → refresh + show_centered");
+        if let Err(e) = crate::ui::refresh_dashboard(d, db) {
+            log::warn!("open_dashboard: refresh 失败(仍继续显示): {e}");
+        }
         crate::ui::show_centered(d);
     } else {
         // 兜底：预热失败才走这里现建（首帧可能不显示，用 force_first_show 补救）。
+        log::warn!("open_dashboard: 预热窗口不存在 → 兜底 build + force_first_show");
         match crate::ui::build_dashboard(db) {
             Ok(d) => {
                 let _ = d.show();
@@ -77,6 +81,7 @@ fn open_dashboard(win: &std::cell::RefCell<Option<crate::ui::Dashboard>>, db: &s
 
 /// 启动托盘 + 后台采集，进入事件循环（阻塞至退出）。
 pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
+    log::info!("=== 托盘启动 (pid={}) ===", std::process::id());
     // 按配置写/删开机自启项（指向当前 exe）。
     if let Ok(exe) = std::env::current_exe() {
         if let Err(e) = crate::autostart::set_autostart(cfg.autostart, &exe.to_string_lossy()) {
@@ -127,6 +132,7 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
             menu_visible.clone(),
         );
         menu.on_act(move |which| {
+            log::info!("托盘菜单点击: which={which}");
             if let Some(mm) = menu_weak.upgrade() {
                 let _ = mm.hide(); // 先立即收起菜单，再执行动作
             }
@@ -146,7 +152,18 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
     let tray_rx = TrayIconEvent::receiver();
     let timer = slint::Timer::default();
     let menu_hwnd: Cell<Option<isize>> = Cell::new(None);
+    // 菜单弹出时刻：弹出后一小段时间内不做自动隐藏（给用户"按下→松开"一个菜单项的缓冲，
+    // 否则点击在 mousedown→mouseup 之间就会被前台轮询误判成"点外面"而吞掉）。
+    let menu_shown_at: Cell<Instant> = Cell::new(Instant::now() - Duration::from_secs(3600));
     let mv = menu_visible.clone();
+
+    // 判断前台变化目标是不是"我们自己/系统无关前台"——这些是菜单弹出或托盘交互造成的抖动，
+    // 不是用户真的点到菜单外面，不能当作自动隐藏的理由。
+    // (直接用标题判断：我们的托盘窗口与仪表盘都叫"今天用啥"，还有桌面 Program Manager。)
+    fn is_ignored_foreground_title() -> bool {
+        let t = crate::ui::diag_foreground_title();
+        t == "今天用啥" || t == "Program Manager" || t.is_empty()
+    }
 
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(120), move || {
         while let Ok(ev) = tray_rx.try_recv() {
@@ -178,14 +195,32 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
             });
             mv.set(true);
             menu_hwnd.set(None);
+            menu_shown_at.set(Instant::now());
+            log::info!("托盘右键: 显示菜单 @ ({mx},{my}) scale={scale:.2}");
         }
 
         if mv.get() {
             let fg = unsafe { GetForegroundWindow() }.0 as isize;
             match menu_hwnd.get() {
-                None => menu_hwnd.set(Some(fg)),
+                None => {
+                    menu_hwnd.set(Some(fg));
+                    log::info!(
+                        "菜单显示后记录前台 hwnd={fg} title='{}'",
+                        crate::ui::diag_foreground_title()
+                    );
+                }
                 Some(h) => {
-                    if fg != h {
+                    // 弹出缓冲期（约 350ms）内忽略前台变化：给真实点击留出按下→松开的时间。
+                    if menu_shown_at.get().elapsed() < Duration::from_millis(350) {
+                        // 缓冲期内只更新基线，不做自动隐藏（避免把"首次浮动/自身抢前台"当成点击外部）。
+                        menu_hwnd.set(Some(fg));
+                        return;
+                    }
+                    if fg != h && !is_ignored_foreground_title() {
+                        log::info!(
+                            "菜单自动隐藏: 前台 {h}->{fg} title='{}'",
+                            crate::ui::diag_foreground_title()
+                        );
                         let _ = menu.hide();
                         mv.set(false);
                         menu_hwnd.set(None);
@@ -220,6 +255,15 @@ pub fn run_tray(cfg: Config, db_path: String) -> Result<(), String> {
 
 static GENERATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// RAII 守卫：持有 GENERATING 并发锁，无论线程正常结束、提前 return 还是 panic，
+/// Drop 都会把锁释放——杜绝"一次卡死/异常就把锁永久占住、之后再也不生成"。
+struct GenGuard;
+impl Drop for GenGuard {
+    fn drop(&mut self) {
+        GENERATING.store(false, Ordering::Release);
+    }
+}
+
 /// 解析 API key：优先环境变量 AT_API_KEY，否则读加密的 key.bin。
 fn resolve_key() -> Option<String> {
     std::env::var("AT_API_KEY")
@@ -251,7 +295,10 @@ fn auto_generate_if_changed(win_weak: slint::Weak<crate::ui::Dashboard>, db: Str
         return;
     }
     std::thread::spawn(move || {
-        let Some(key) = resolve_key() else { return };
+        let Some(key) = resolve_key() else {
+            log::warn!("AI 总结跳过：无法取得 API key(检查 key.bin 或 AT_API_KEY)");
+            return;
+        };
         let Ok(mut st) = crate::storage::Storage::open(&db) else {
             return;
         };
@@ -275,17 +322,20 @@ fn auto_generate_if_changed(win_weak: slint::Weak<crate::ui::Dashboard>, db: Str
         let unchanged = st.get_meta(&sig_key).ok().flatten().as_deref() == Some(sig.as_str());
         let has_summary = st.latest_summary(start, end).ok().flatten().is_some();
         if unchanged && has_summary {
+            log::info!("AI 总结跳过：今日数据未变且已有总结");
             return;
         }
-        // 防并发：已有生成在跑就不重复
+        // 防并发：已有生成在跑就不重复。拿到后立刻用 RAII 守卫托管，保证任何退出路径都释放锁。
         if GENERATING
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            log::info!("AI 总结跳过：已有生成任务在进行(GENERATING 锁被占)");
             return;
         }
+        let _gen_guard = GenGuard;
         set_summary_ui(&win_weak, "AI 总结生成中…".into());
-        // API 可能偶发报错（限流/网络）：最多重试 3 次、指数退避，尽量把总结跑出来。
+        // API 可能偶发报错/超时（限流/网络/服务端半死）：最多重试 3 次、指数退避，尽量把总结跑出来。
         let mut last_err = String::new();
         let mut ok = false;
         for attempt in 1..=3u32 {
@@ -312,6 +362,6 @@ fn auto_generate_if_changed(win_weak: slint::Weak<crate::ui::Dashboard>, db: Str
         if !ok {
             set_summary_ui(&win_weak, format!("（AI 总结失败，已重试3次：{last_err}）"));
         }
-        GENERATING.store(false, Ordering::Release);
+        // GENERATING 锁由 _gen_guard 在此作用域结束时释放（含 panic 情形）。
     });
 }

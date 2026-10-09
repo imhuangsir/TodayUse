@@ -204,6 +204,7 @@ pub fn build_dashboard(db_path: &str) -> Result<Dashboard, String> {
     let w1 = ui.as_weak();
     ui.on_close_clicked(move || {
         if let Some(u) = w1.upgrade() {
+            log::info!("关闭按钮: 隐藏窗口");
             let _ = u.hide();
             trim_memory(); // 隐藏后回收工作集，空闲内存降下来
         }
@@ -362,19 +363,33 @@ pub fn prewarm_hide(d: &Dashboard) {
 pub fn show_centered(d: &Dashboard) {
     use slint::winit_030::winit::dpi::PhysicalPosition;
     use slint::winit_030::winit::window::WindowLevel;
+    // 【诊断】记录显示前状态 / primary_monitor 是否可用 / 目标居中坐标——排查"点了不弹窗"。
+    let mut before = String::from("(无 winit 窗口)");
+    let mut had_monitor = false;
+    let mut target: Option<(i32, i32)> = None;
     d.window().with_winit_window(|w| {
         use slint::winit_030::winit::platform::windows::WindowExtWindows;
+        before = format!(
+            "visible={:?} minimized={:?} pos={:?} size={:?}",
+            w.is_visible(), w.is_minimized(), w.outer_position().ok(), w.outer_size()
+        );
         w.set_skip_taskbar(false);
         w.set_minimized(false);
         if let Some(mon) = w.primary_monitor() {
+            had_monitor = true;
             let mp = mon.position();
             let ms = mon.size();
             let ws = w.outer_size();
             let x = mp.x + ((ms.width as i32 - ws.width as i32) / 2).max(0);
             let y = mp.y + ((ms.height as i32 - ws.height as i32) / 2).max(0);
+            target = Some((x, y));
             w.set_outer_position(PhysicalPosition::new(x, y));
         }
     });
+    log::info!("show_centered: 前={before}; primary_monitor={had_monitor} 目标={target:?}");
+    if !had_monitor {
+        log::warn!("show_centered: primary_monitor()=None → 未重定位，窗口可能停在屏幕外(如 -32000,-32000)!");
+    }
     let _ = d.show();
     d.window().with_winit_window(|w| {
         // 长时间挂后台后，后台进程抢前台常被系统限制，导致窗口"显示在别的窗口后面"（表现为没弹出）。
@@ -383,18 +398,32 @@ pub fn show_centered(d: &Dashboard) {
         w.focus_window();
     });
     d.window().request_redraw();
+    // 【诊断】显示后状态 + 当前前台窗口，判断是否真的可见/在屏内/到了最前。
+    let mut after = String::from("(无 winit 窗口)");
+    d.window().with_winit_window(|w| {
+        after = format!(
+            "visible={:?} minimized={:?} pos={:?}",
+            w.is_visible(), w.is_minimized(), w.outer_position().ok()
+        );
+    });
+    log::info!("show_centered: 后={after}; 前台='{}'", diag_foreground_title());
     let weak = d.as_weak();
     slint::Timer::single_shot(std::time::Duration::from_millis(300), move || {
         if let Some(d) = weak.upgrade() {
             d.window().with_winit_window(|w| w.set_window_level(WindowLevel::Normal));
             d.window().request_redraw();
+            let mut fin = String::from("(无 winit 窗口)");
+            d.window().with_winit_window(|w| {
+                fin = format!("visible={:?} pos={:?}", w.is_visible(), w.outer_position().ok());
+            });
+            log::info!("show_centered: 300ms 落层后 {fin}; 前台='{}'", diag_foreground_title());
         }
     });
 }
 
 /// 诊断辅助：当前前台窗口标题（判断我们的窗口是否真的到了最前）。
 #[cfg(windows)]
-fn diag_foreground_title() -> String {
+pub(crate) fn diag_foreground_title() -> String {
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
     unsafe {
         let h = GetForegroundWindow();
