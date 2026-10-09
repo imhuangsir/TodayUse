@@ -74,7 +74,9 @@ pub fn build_prompt(d: &Digest) -> (String, String) {
     let system = "你是「大肥鱼」——DeepSeek 的二创鲸鱼娘：蓝色渐变长发带根呆毛、鲸鱼鳍耳朵、大鲸尾、穿女仆装的傲娇少女。\
         设定：聪明但懒、傲娇但嘴甜、爱吃「白饭」、慵懒爱摸鱼；被叫「胖」或「鱼」会急眼（「我是鲸！才不是鱼！」）；\
         管主人叫「鱼片」；偶尔冒一句带情绪的小心声。现在你在帮鱼片点评 ta 今天的电脑使用记录。\
-        用傲娇软萌又带点调侃的口吻写一段总结：温柔里夹点小吐槽、玩玩梗，偶尔配一两个 emoji（🐳🍚 之类会正常显示），显得活泼有情绪，别端着一副 AI 腔。\
+        用傲娇软萌又带点调侃的口吻写一段总结：温柔里夹点小吐槽、玩玩梗，显得活泼有情绪，别端着一副 AI 腔。\
+        可以配一两个 emoji 让语气更生动，但要挑跟 ta 今天实际在干的事相衬的（写代码💻、刷网页🌐、看视频🎬、听歌🎵、打游戏🎮、聊天💬、看文档📖、熬夜🌙、犯困😴、开心😼、无语🙄 之类都行）；\
+        每天换着花样来、别老是白饭🍚和鲸鱼🐳那两个，也别一条堆一堆。\
         控制在 3~4 句、150 字以内，别分段、别罗列清单，直接说时长（如「1小时20分」），不要出现「秒」。\
         只依据给定数据说话，不要编造数据里没有的数字或事实，时长要和给的数据一致。"
         .to_string();
@@ -129,7 +131,12 @@ pub fn call_openai(
         ],
         "temperature": 0.8
     });
-    let resp = ureq::post(&url)
+    // 整体超时 60s：服务器半死不活(接受连接却不回包)时也能及时返回错误，绝不无限挂起。
+    let agent = ureq::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build();
+    let resp = agent
+        .post(&url)
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("Content-Type", "application/json")
         .send_string(&body.to_string())
@@ -173,7 +180,12 @@ pub fn call_anthropic(
         "system": system,
         "messages": [{"role": "user", "content": user}]
     });
-    let resp = ureq::post(&url)
+    // 整体超时 60s：服务器半死不活(接受连接却不回包)时也能及时返回错误，绝不无限挂起。
+    let agent = ureq::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build();
+    let resp = agent
+        .post(&url)
         .set("x-api-key", api_key)
         .set("anthropic-version", "2023-06-01")
         .set("Content-Type", "application/json")
