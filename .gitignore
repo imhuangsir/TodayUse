@@ -3,6 +3,9 @@
 **/*.rs.bk
 # (Cargo.lock is committed — this is an application, not a library)
 
+# 构建产物 exe（部署到仓库根目录的"今天用啥.exe"是产物，不入库）
+*.exe
+
 # App runtime data (never commit local activity data / secrets)
 *.db
 *.db-wal
