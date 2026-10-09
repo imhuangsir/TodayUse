@@ -53,6 +53,27 @@ pub fn build_event(ts: i64, process_path: &str, window_title: &str, is_idle: boo
     }
 }
 
+/// 判定"系统休眠/挂起"的墙钟跳变下限(秒)：采样循环停摆超过它，视为机器睡过去了。
+/// (实际阈值取 max(本值, 3×采样周期)，避免采样周期被配得很大时误判。)
+const SUSPEND_GAP_MIN_SEC: i64 = 60;
+
+/// 采样前的挂起检测：`now_ts - prev_ts` 超过阈值（说明采样循环被冻结＝系统休眠/挂起/进程被挂起），
+/// 把挂起前的当前会话在 `prev_ts` 处结算掉，从而**丢弃整段睡眠空档**、不计入任何时长
+/// （否则这段跳变会被整段灌进休眠那一刻还开着的那个会话，导致时长虚高）。
+/// 返回被结算的会话（若有），供调用方入库。
+pub fn close_on_suspend(
+    sb: &mut crate::session::SessionBuilder,
+    prev_ts: i64,
+    now_ts: i64,
+    gap_threshold: i64,
+) -> Option<crate::model::Session> {
+    if now_ts - prev_ts > gap_threshold {
+        sb.finish(prev_ts)
+    } else {
+        None
+    }
+}
+
 /// 单轮采集：抓前台/媒体/空闲，按排除规则并入会话构建器（run_for 与 run_daemon 共用）。
 #[cfg(windows)]
 fn collect_once(
@@ -156,9 +177,16 @@ pub fn run_for(cfg: &crate::config::Config, db_path: &str, seconds: u64) -> Resu
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let mut last_flush = Instant::now();
     let now_unix = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let gap_threshold = (cfg.poll_interval_sec as i64 * 3).max(SUSPEND_GAP_MIN_SEC);
+    let mut last_ts = now_unix();
 
     loop {
         let ts = now_unix();
+        // 系统休眠/挂起检测：墙钟大跳变 → 把挂起前会话在上次采样时刻结算，丢弃睡眠空档（不虚增时长）。
+        if let Some(done) = close_on_suspend(&mut sb, last_ts, ts, gap_threshold) {
+            buffer.push(done);
+        }
+        last_ts = ts;
         collect_once(cfg, &autostart_set, threshold_ms, ts, &mut sb, &mut buffer);
         let _ = storage.set_heartbeat(ts);
 
@@ -225,10 +253,18 @@ pub fn run_daemon(
     let mut last_flush = Instant::now();
     let mut last_heartbeat = Instant::now();
     let now_unix = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-    let _ = storage.set_heartbeat(now_unix());
+    let gap_threshold = (cfg.poll_interval_sec as i64 * 3).max(SUSPEND_GAP_MIN_SEC);
+    let mut last_ts = now_unix();
+    let _ = storage.set_heartbeat(last_ts);
 
     while !ctrl.stop.load(Ordering::Relaxed) {
         let ts = now_unix();
+        // 系统休眠/挂起检测：墙钟大跳变 → 把挂起前会话在上次采样时刻结算，丢弃睡眠空档（不虚增时长）。
+        if let Some(done) = close_on_suspend(&mut sb, last_ts, ts, gap_threshold) {
+            log::info!("检测到挂起/休眠(跳变 {}s)：结算挂起前会话 {}，丢弃睡眠空档", ts - last_ts, done.app_name);
+            buffer.push(done);
+        }
+        last_ts = ts;
         collect_once(cfg, &autostart_set, threshold_ms, ts, &mut sb, &mut buffer);
 
         // 心跳每 ~30s 写一次即可（仅用于崩溃残留兜底），不必每轮写盘。
@@ -292,5 +328,33 @@ mod tests {
         assert_eq!(ev.ts, 100);
         assert!(!ev.is_idle);
         assert!(ev.edge_url.is_none());
+    }
+
+    #[test]
+    fn suspend_gap_not_added_to_previous_session() {
+        use crate::session::SessionBuilder;
+        let mut sb = SessionBuilder::new();
+        // 打 OW：1000 起，采样延续到 1040（真实约 40s）
+        sb.on_activity(&build_event(1000, "C:\\ow.exe", "Overwatch", false));
+        sb.touch(1040);
+        let last_ts = 1040i64;
+        let gap = (5i64 * 3).max(SUSPEND_GAP_MIN_SEC); // 默认采样周期 5s → 阈值 60s
+
+        // 正常 5s 采样间隔：不算挂起，不结算
+        assert!(close_on_suspend(&mut sb, last_ts, last_ts + 5, gap).is_none());
+
+        // 休眠 1h48m 后唤醒（墙钟跳变 6480s）：应把 OW 在 1040 结算，时长仍是 40 而非 6520
+        let wake = last_ts + 6480;
+        let closed = close_on_suspend(&mut sb, last_ts, wake, gap).expect("大跳变应结算挂起前会话");
+        assert_eq!(closed.app_name, "ow.exe");
+        assert_eq!(closed.end_ts, 1040);
+        assert_eq!(closed.duration_sec, 40, "睡眠空档不能灌进上一段会话");
+
+        // 唤醒后从新前台重新开段，睡眠空档不计入任何会话
+        assert!(sb
+            .on_activity(&build_event(wake, "C:\\explorer.exe", "桌面", true))
+            .is_none());
+        let after = sb.finish(wake + 30).unwrap();
+        assert_eq!(after.duration_sec, 30);
     }
 }
